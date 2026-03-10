@@ -322,7 +322,7 @@ function renderResults(data) {
 
     const btn = document.createElement('button');
     btn.className = 'fmt-btn';
-    btn.innerHTML = `<div class="fl">${f.label}</div><div class="fs">${f.ext?.toUpperCase() || ''}${f.external ? ' ↗' : ''}</div>`;
+    btn.innerHTML = `<div class="fl">${f.label}</div><div class="fs">${f.sub || f.ext?.toUpperCase() || ''}${f.external ? ' ↗' : ''}</div>`;
     btn.onclick = () => f.external
       ? window.open(f.url, '_blank')
       : startDownload(f, data.title);
@@ -364,32 +364,44 @@ async function startDownload(fmt, title) {
   }, 200);
 
   try {
-    let downloadUrl = fmt.url;
-
-    // YouTube — ask backend to do y2mate convert (hidden from browser)
-    if (!downloadUrl && fmt.k && fmt.vid) {
-      const r = await fetch(`${API}/api/yt-convert`, {
+    // Server-side merge (Facebook/Instagram no-audio fix)
+    if (fmt.merge && fmt.download_url) {
+      $('progLabel').textContent = 'Merging audio+video on server…';
+      const r = await fetch(`${API}/api/download`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ vid: fmt.vid, k: fmt.k }),
+        body:    JSON.stringify({ url: fmt.download_url }),
       });
-      if (!r.ok) throw new Error('🔴 Convert failed — try again');
-      const d = await r.json();
-      downloadUrl = d.url;
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.detail || '🔴 Download failed');
+      }
+      clearInterval(ticker);
+      $('progBar').style.width = '100%';
+      $('progPct').textContent = '100%';
+
+      // Stream blob to browser
+      const blob = await r.blob();
+      const a = document.createElement('a');
+      a.href     = URL.createObjectURL(blob);
+      a.download = `${(title||'video').substring(0,50)}.mp4`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+
+    } else {
+      // Direct URL download
+      if (!fmt.url) throw new Error('Download URL not found');
+      clearInterval(ticker);
+      $('progBar').style.width = '100%';
+      $('progPct').textContent = '100%';
+
+      const a = document.createElement('a');
+      a.href     = fmt.url;
+      a.download = `${(title||'video').substring(0,50)}.${fmt.ext}`;
+      a.target   = '_blank';
+      a.rel      = 'noopener';
+      a.click();
     }
-
-    clearInterval(ticker);
-    if (!downloadUrl) throw new Error('Download URL not found');
-
-    $('progBar').style.width = '100%';
-    $('progPct').textContent = '100%';
-
-    const a = document.createElement('a');
-    a.href     = downloadUrl;
-    a.download = `${(title||'video').substring(0,50)}.${fmt.ext}`;
-    a.target   = '_blank';
-    a.rel      = 'noopener';
-    a.click();
 
     setTimeout(() => {
       $('progressEl').classList.remove('show');
