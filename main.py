@@ -1,4 +1,5 @@
 
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -307,3 +308,14 @@ async def stream_file(req: StreamRequest):
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "proxies": len(PROXIES)}
+
+@app.get("/")
+async def root():
+    from fastapi.responses import FileResponse
+    return FileResponse("static/index.html")
+
+# ── Run ────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))  # Railway sets PORT automatically
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
