@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>SaveIt – Download Anything</title>
+<script>
+// ── DevTools / Inspect Protection ─────────────────────────────────────────
+// Block Right-click
+document.addEventListener('contextmenu', e => e.preventDefault());
+
+// Block F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+U, Ctrl+S
+document.addEventListener('keydown', e => {
+  if (
+    e.key === 'F12' ||
+    (e.ctrlKey && e.shiftKey && ['I','i','J','j','C','c'].includes(e.key)) ||
+    (e.ctrlKey && ['U','u','S','s'].includes(e.key))
+  ) { e.preventDefault(); e.stopPropagation(); return false; }
+});
+
+// Detect devtools open via window size difference
+(function devtoolsDetect() {
+  const threshold = 160;
+  function check() {
+    if (
+      window.outerWidth  - window.innerWidth  > threshold ||
+      window.outerHeight - window.innerHeight > threshold
+    ) {
+      document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;font-size:1.2rem;color:#888;">🔒 Access Restricted</div>';
+    }
+  }
+  setInterval(check, 1000);
+})();
+
+// Debugger trap — slows down devtools console
+(function() {
+  const start = new Date();
+  // eslint-disable-next-line no-debugger
+  debugger;
+  if (new Date() - start > 100) {
+    document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;font-size:1.2rem;color:#888;">🔒 Access Restricted</div>';
+  }
+})();
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=Instrument+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0e0e0f;--surface:#18181b;--border:#2a2a2e;
+  --text:#f2f0eb;--muted:#6b6b70;--dim:#3a3a3f;
+  --yt:#FF0000;--tt:#69C9D0;--ig:#f77737;--fb:#1877F2;
+  --green:#3ecf8e;--green-dim:#1a3d2e;
+}
+body{font-family:'Instrument Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;overflow-x:hidden}
+
+/* BG grid */
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);background-size:40px 40px;opacity:.25;pointer-events:none;z-index:0}
+
+header{position:relative;z-index:10;padding:1.4rem 2rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);backdrop-filter:blur(8px);background:rgba(14,14,15,.8)}
+.logo{font-family:'Syne',sans-serif;font-size:1.5rem;font-weight:800;letter-spacing:-0.04em;color:var(--text)}
+.logo span{color:var(--green)}
+.tagline{font-size:.72rem;font-weight:400;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+
+main{flex:1;display:flex;flex-direction:column;align-items:center;padding:3.5rem 1.5rem 4rem;position:relative;z-index:1}
+
+.hero{text-align:center;max-width:620px;margin-bottom:2.5rem;animation:fadeUp .6s ease both}
+.hero h1{font-family:'Syne',sans-serif;font-size:clamp(2.2rem,6vw,4rem);font-weight:800;line-height:1.05;letter-spacing:-0.04em;margin-bottom:.9rem}
+.hero h1 .accent{color:var(--green)}
+.hero p{color:var(--muted);font-size:1rem;line-height:1.7;font-weight:300}
+
+/* Platform badges */
+.badges{display:flex;justify-content:center;gap:.5rem;flex-wrap:wrap;margin-top:1.4rem}
+.badge{display:flex;align-items:center;gap:6px;padding:5px 12px;border-radius:30px;font-size:.75rem;font-weight:500;border:1px solid var(--border);background:var(--surface);color:var(--muted);transition:all .2s}
+.badge.yt{border-color:rgba(255,0,0,.3);color:var(--yt);background:rgba(255,0,0,.07)}
+.badge.tt{border-color:rgba(105,201,208,.3);color:var(--tt);background:rgba(105,201,208,.07)}
+.badge.ig{border-color:rgba(247,119,55,.3);color:var(--ig);background:rgba(247,119,55,.07)}
+.badge.fb{border-color:rgba(24,119,242,.3);color:var(--fb);background:rgba(24,119,242,.07)}
+.badge .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+
+/* Input card */
+.card{width:100%;max-width:640px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:1.8rem;animation:fadeUp .7s .1s ease both;box-shadow:0 0 60px rgba(0,0,0,.5)}
+
+.input-row{display:flex;gap:.6rem;background:#0e0e0f;border:1px solid var(--border);border-radius:12px;padding:.35rem .35rem .35rem 1rem;transition:border-color .2s}
+.input-row:focus-within{border-color:var(--green)}
+.input-row input{flex:1;background:transparent;border:none;font-size:.95rem;font-family:'Instrument Sans',sans-serif;color:var(--text);outline:none;min-width:0}
+.input-row input::placeholder{color:var(--muted)}
+.btn{border:none;border-radius:9px;padding:.7rem 1.4rem;font-size:.88rem;font-weight:500;font-family:'Instrument Sans',sans-serif;cursor:pointer;transition:all .2s;white-space:nowrap}
+.btn-go{background:var(--green);color:#000}
+.btn-go:hover{filter:brightness(1.1);transform:translateY(-1px)}
+.btn-go:disabled{background:var(--dim);color:var(--muted);cursor:not-allowed;transform:none;filter:none}
+
+/* Status */
+.status{display:none;align-items:center;gap:8px;margin-top:1.1rem;font-size:.82rem;color:var(--muted)}
+.status.show{display:flex;animation:fadeIn .3s}
+.spin{width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+
+/* Error */
+.error{display:none;margin-top:1rem;padding:.9rem 1.1rem;background:rgba(255,60,60,.08);border:1px solid rgba(255,60,60,.2);border-radius:10px;font-size:.83rem;color:#ff7070}
+.error.show{display:block;animation:fadeIn .3s}
+
+/* Platform detected bar */
+.detected-bar{display:none;align-items:center;gap:8px;margin-top:1rem;padding:.7rem 1rem;border-radius:9px;font-size:.82rem;border:1px solid var(--border);background:#0e0e0f}
+.detected-bar.show{display:flex;animation:fadeIn .3s}
+.det-dot{width:9px;height:9px;border-radius:50%}
+
+/* Results */
+.results{display:none;margin-top:1.5rem;padding-top:1.5rem;border-top:1px solid var(--border)}
+.results.show{display:block;animation:fadeUp .4s}
+
+.video-preview{display:flex;gap:1rem;margin-bottom:1.4rem;align-items:flex-start}
+.thumb-wrap{width:110px;height:70px;border-radius:8px;overflow:hidden;flex-shrink:0;border:1px solid var(--border);background:var(--dim);display:flex;align-items:center;justify-content:center;font-size:1.6rem}
+.thumb-wrap img{width:100%;height:100%;object-fit:cover}
+.video-meta h4{font-size:.9rem;font-weight:500;line-height:1.4;margin-bottom:6px;color:var(--text)}
+.video-meta p{font-size:.75rem;color:var(--muted)}
+.video-stats{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.5rem}
+.stat-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:20px;font-size:.7rem;font-weight:500;background:var(--dim);color:var(--muted);border:1px solid var(--border)}
+.stat-chip .si{font-size:.75rem}
+
+.formats-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:.7rem;font-weight:500}
+.fmt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:.5rem}
+.fmt-row{display:flex;gap:.4rem;align-items:stretch}
+.fmt-btn{flex:1;padding:.75rem 1rem;border-radius:10px;border:1px solid var(--border);background:#0e0e0f;cursor:pointer;text-align:left;transition:all .2s;font-family:'Instrument Sans',sans-serif;min-width:0}
+.fmt-btn:hover{border-color:var(--green);background:var(--green-dim)}
+.fmt-btn .fl{font-size:.85rem;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fmt-btn .fs{font-size:.7rem;color:var(--muted);margin-top:2px}
+.copy-btn{flex-shrink:0;width:36px;border-radius:10px;border:1px solid var(--border);background:#0e0e0f;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:.85rem;transition:all .2s;color:var(--muted);font-family:'Instrument Sans',sans-serif;position:relative}
+.copy-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-dim)}
+.copy-btn.copied{border-color:var(--green);color:var(--green);background:var(--green-dim)}
+.copy-tooltip{position:absolute;bottom:calc(100% + 5px);left:50%;transform:translateX(-50%);background:var(--green);color:#000;font-size:.65rem;font-weight:600;padding:2px 7px;border-radius:5px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .2s}
+.copy-btn.copied .copy-tooltip{opacity:1}
+
+/* Download progress */
+.progress{display:none;margin-top:1.4rem;padding-top:1.4rem;border-top:1px solid var(--border)}
+.progress.show{display:block;animation:fadeIn .3s}
+.prog-info{display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted);margin-bottom:.5rem}
+.prog-bg{height:5px;background:var(--dim);border-radius:10px;overflow:hidden}
+.prog-bar{height:100%;background:var(--green);border-radius:10px;width:0%;transition:width .15s linear}
+
+/* Success */
+.success{display:none;margin-top:1.2rem;padding:1rem 1.2rem;background:var(--green-dim);border:1px solid rgba(62,207,142,.2);border-radius:12px;align-items:center;gap:12px}
+.success.show{display:flex;animation:fadeUp .4s}
+.suc-icon{width:34px;height:34px;background:var(--green);border-radius:50%;display:flex;align-items:center;justify-content:center;color:#000;font-weight:700;flex-shrink:0}
+.suc-text h4{font-size:.88rem;font-weight:500;color:var(--green)}
+.suc-text p{font-size:.75rem;color:var(--muted);margin-top:2px}
+.btn-new{margin-left:auto;padding:.45rem .9rem;font-size:.78rem;font-family:'Instrument Sans',sans-serif;background:transparent;border:1px solid var(--border);border-radius:8px;cursor:pointer;color:var(--muted);transition:all .2s;white-space:nowrap}
+.btn-new:hover{border-color:var(--green);color:var(--green)}
+
+/* Platform colors */
+.c-yt{color:var(--yt)!important;border-color:rgba(255,0,0,.3)!important;background:rgba(255,0,0,.07)!important}
+.c-tt{color:var(--tt)!important;border-color:rgba(105,201,208,.3)!important;background:rgba(105,201,208,.07)!important}
+.c-ig{color:var(--ig)!important;border-color:rgba(247,119,55,.3)!important;background:rgba(247,119,55,.07)!important}
+.c-fb{color:var(--fb)!important;border-color:rgba(24,119,242,.3)!important;background:rgba(24,119,242,.07)!important}
+
+/* How section */
+.how{width:100%;max-width:640px;margin-top:3rem;animation:fadeUp .8s .2s ease both}
+.how h2{font-family:'Syne',sans-serif;font-size:1.1rem;font-weight:700;margin-bottom:1rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:.8rem}
+@media(max-width:480px){.steps{grid-template-columns:1fr}}
+.step{padding:1.1rem;background:var(--surface);border:1px solid var(--border);border-radius:12px}
+.step-n{font-family:'Syne',sans-serif;font-size:1.8rem;font-weight:800;color:var(--dim);line-height:1;margin-bottom:.4rem}
+.step h4{font-size:.85rem;font-weight:500;margin-bottom:3px;color:var(--text)}
+.step p{font-size:.75rem;color:var(--muted);line-height:1.5}
+
+footer{position:relative;z-index:1;padding:1.2rem 2rem;border-top:1px solid var(--border);text-align:center;font-size:.75rem;color:var(--muted)}
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Save<span>It</span></div>
+  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
+    <div class="tagline">No server · No limits · No watermark</div>
+    <div id="proxyBadge" style="font-size:.65rem;color:var(--muted);letter-spacing:.04em;transition:color .3s">🔒 Proxy 1 active</div>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <h1>Download any video<br/><span class="accent">instantly.</span></h1>
+    <p>Paste a link from YouTube, TikTok, Instagram or Facebook.<br/>No app. No server. Just your browser.</p>
+    <div class="badges">
+      <div class="badge yt"><div class="dot"></div>YouTube</div>
+      <div class="badge tt"><div class="dot"></div>TikTok</div>
+      <div class="badge ig"><div class="dot"></div>Instagram</div>
+      <div class="badge fb"><div class="dot"></div>Facebook</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="input-row">
+      <input type="text" id="urlInput" placeholder="Paste video URL here…" autocomplete="off"/>
+      <button class="btn btn-go" id="fetchBtn" onclick="handleFetch()">Download</button>
+    </div>
+
+    <div class="detected-bar" id="detBar">
+      <div class="det-dot" id="detDot"></div>
+      <span id="detText">Detected: TikTok</span>
+    </div>
+
+    <div class="status" id="status">
+      <div class="spin"></div>
+      <span id="statusText">Fetching video info…</span>
+    </div>
+
+    <div class="error" id="errorBox"></div>
+
+    <div class="results" id="results">
+      <div class="video-preview" id="videoPreview">
+        <div class="thumb-wrap" id="thumbWrap">🎬</div>
+        <div class="video-meta">
+          <h4 id="vidTitle">—</h4>
+          <p id="vidMeta">—</p>
+          <div class="video-stats" id="vidStats"></div>
+        </div>
+      </div>
+      <div class="formats-label">Choose format</div>
+      <div class="fmt-grid" id="fmtGrid"></div>
+    </div>
+
+    <div class="progress" id="progressEl">
+      <div class="prog-info"><span id="progLabel">Downloading…</span><span id="progPct">0%</span></div>
+      <div class="prog-bg"><div class="prog-bar" id="progBar"></div></div>
+    </div>
+
+    <div class="success" id="successEl">
+      <div class="suc-icon">✓</div>
+      <div class="suc-text"><h4>Downloaded!</h4><p id="sucDesc">File saved to your device.</p></div>
+      <button class="btn-new" onclick="resetAll()">↺ New</button>
+    </div>
+  </div>
+
+  <div class="how">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step"><div class="step-n">01</div><h4>Paste the link</h4><p>Copy the URL from YouTube, TikTok, Instagram or Facebook.</p></div>
+      <div class="step"><div class="step-n">02</div><h4>Fetch info</h4><p>We scrape the platform's own downloader service to get real links.</p></div>
+      <div class="step"><div class="step-n">03</div><h4>Save it</h4><p>Pick quality and the file downloads straight to your device.</p></div>
+    </div>
+  </div>
+</main>
+
+<footer>© 2026 SaveIt · For personal use only · Respect platform Terms of Service</footer>
+
+<script>
+// ── CORS proxy fallback chain ──────────────────────────────────────────────
+// Each proxy is tried in order. If one fails (rate limit / block / error),
+// the next one is automatically used. All failures → friendly error message.
+
+const PROXIES = [
+  // 1. corsproxy.io  — reliable, no auth needed
+  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  // 2. allorigins    — returns JSON {contents}, handled below
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  // 3. cors-anywhere — community instance (may need occasional unblock)
+  url => `https://cors-anywhere.herokuapp.com/${url}`,
+  // 4. thingproxy    — simple GET/POST proxy
+  url => `https://thingproxy.freeboard.io/fetch/${url}`,
+];
+
+// Which proxy index is currently working best
+let activeProxyIdx = 0;
+
+// Proxy status indicator in header
+function updateProxyBadge(idx, retrying = false) {
+  const badge = document.getElementById('proxyBadge');
+  const stTxt = document.getElementById('statusText');
+  if (badge) {
+    if (retrying) {
+      badge.textContent = `⚡ Switching proxy ${idx + 1}/${PROXIES.length}…`;
+      badge.style.color = '#f5a623';
+    } else {
+      badge.textContent = `🔒 Proxy ${idx + 1} active`;
+      badge.style.color = 'var(--muted)';
+    }
+  }
+  if (stTxt && retrying) {
+    stTxt.textContent = `Proxy ${idx}/${PROXIES.length - 1} busy, trying next…`;
+  }
+}
+
+// Check if a response looks like an error
+function isBadResponse(res) {
+  return res.status === 429 || res.status === 403 || res.status === 407 || res.status >= 500;
+}
+
+// Core proxy fetch — tries each proxy in PROXIES array until one works
+async function proxyFetch(targetUrl, options = {}) {
+  // Start from the last known-good proxy
+  const startIdx = activeProxyIdx;
+  const order    = [
+    ...Array.from({length: PROXIES.length - startIdx}, (_, i) => startIdx + i),
+    ...Array.from({length: startIdx}, (_, i) => i),
+  ];
+
+  let lastError = '';
+
+  for (let attempt = 0; attempt < order.length; attempt++) {
+    const idx      = order[attempt];
+    const proxyUrl = PROXIES[idx](targetUrl);
+
+    if (attempt > 0) {
+      updateProxyBadge(idx, true);
+      await new Promise(r => setTimeout(r, 400)); // small pause before retry
+    }
+
+    try {
+      const res = await fetch(proxyUrl, { ...options, signal: AbortSignal.timeout(12000) });
+
+      if (isBadResponse(res)) {
+        lastError = res.status === 429
+          ? 'Rate limited'
+          : `HTTP ${res.status}`;
+        continue; // try next proxy
+      }
+
+      if (res.ok) {
+        activeProxyIdx = idx; // remember which proxy worked
+        updateProxyBadge(idx, false);
+        return res;
+      }
+
+    } catch(e) {
+      lastError = e.name === 'TimeoutError' ? 'Timeout' : e.message;
+      // network error / timeout → try next proxy
+    }
+  }
+
+  // All proxies exhausted
+  updateProxyBadge(activeProxyIdx, false);
+  throw new Error(`🔴 All proxies busy — try again in a moment (${lastError})`);
+}
+
+// ── Platform detection ─────────────────────────────────────────────────────
+function detect(url) {
+  const u = url.toLowerCase();
+  if (u.includes('youtube.com') || u.includes('youtu.be')) return 'youtube';
+  if (u.includes('tiktok.com') || u.includes('vm.tiktok')) return 'tiktok';
+  if (u.includes('instagram.com')) return 'instagram';
+  if (u.includes('facebook.com') || u.includes('fb.watch')) return 'facebook';
+  return null;
+}
+
+const PLATFORM_META = {
+  youtube:   { label:'YouTube',   cls:'c-yt', dot:'#FF0000' },
+  tiktok:    { label:'TikTok',    cls:'c-tt', dot:'#69C9D0' },
+  instagram: { label:'Instagram', cls:'c-ig', dot:'#f77737' },
+  facebook:  { label:'Facebook',  cls:'c-fb', dot:'#1877F2' },
+};
+
+// ── UI helpers ─────────────────────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+let currentUrl = '', currentPlatform = '';
+
+function setLoading(on, msg='') {
+  $('status').classList.toggle('show', on);
+  $('statusText').textContent = msg;
+  $('fetchBtn').disabled = on;
+}
+function showError(msg) {
+  $('errorBox').textContent = '⚠ ' + msg;
+  $('errorBox').classList.add('show');
+}
+function clearError() { $('errorBox').classList.remove('show'); }
+
+function showDetected(platform) {
+  const m = PLATFORM_META[platform];
+  $('detDot').style.background = m.dot;
+  $('detText').textContent = 'Detected: ' + m.label;
+  const bar = $('detBar');
+  bar.className = 'detected-bar show ' + m.cls;
+}
+
+$('urlInput').addEventListener('input', () => {
+  const p = detect($('urlInput').value.trim());
+  if (p) showDetected(p);
+  else $('detBar').classList.remove('show');
+});
+
+$('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') handleFetch(); });
+
+// ── Main fetch handler ─────────────────────────────────────────────────────
+async function handleFetch() {
+  const url = $('urlInput').value.trim();
+  if (!url) { $('urlInput').focus(); return; }
+
+  currentUrl      = url;
+  currentPlatform = detect(url);
+
+  if (!currentPlatform) {
+    showError('YouTube, TikTok, Instagram හෝ Facebook link එකක් paste කරන්න.');
+    return;
+  }
+
+  resetResults();
+  clearError();
+  setLoading(true, 'Fetching video info…');
+
+  try {
+    let data;
+    if (currentPlatform === 'tiktok')    data = await fetchTikTok(url);
+    else if (currentPlatform === 'instagram') data = await fetchInstagram(url);
+    else if (currentPlatform === 'facebook')  data = await fetchFacebook(url);
+    else                                       data = await fetchYouTube(url);
+
+    setLoading(false);
+    renderResults(data);
+  } catch(e) {
+    setLoading(false);
+    showError(e.message);
+  }
+}
+
+// ── TikTok via ssstik.io ───────────────────────────────────────────────────
+async function fetchTikTok(url) {
+  // Step 1: get token from ssstik homepage
+  const homeRes = await proxyFetch('https://ssstik.io/en');
+  const homeHtml = await homeRes.text();
+  const ttMatch = homeHtml.match(/name="tt"\s+value="([^"]+)"/);
+  if (!ttMatch) throw new Error('🔴 Server busy — try again later');
+  const token = ttMatch[1];
+
+  // Step 2: POST with TikTok URL
+  const formData = new URLSearchParams({ id: url, locale: 'en', tt: token });
+  const res = await proxyFetch('https://ssstik.io/abc?url=dl', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: formData.toString(),
+  });
+  const html = await res.text();
+
+  // Step 3: parse links
+  const parser = new DOMParser();
+  const doc    = parser.parseFromString(html, 'text/html');
+
+  const thumb   = doc.querySelector('img.result_image, img.mainpicture')?.src || null;
+  const title   = doc.querySelector('.maintext, .result_author')?.textContent?.trim() || 'TikTok Video';
+  const formats = [];
+  const seen    = new Set();
+
+  doc.querySelectorAll('a[href]').forEach(a => {
+    const href = a.href;
+    if (!href.startsWith('http')) return;
+    const txt = a.textContent.trim().toLowerCase();
+
+    let label;
+    if (txt.includes('watermark') && (txt.includes('no') || txt.includes('without'))) label = 'MP4 No Watermark';
+    else if (txt.includes('hd'))        label = 'MP4 HD';
+    else if (txt.includes('watermark')) label = 'MP4 With Watermark';
+    else if (txt.includes('mp3') || txt.includes('audio')) label = 'MP3 Audio';
+    else if (txt.includes('mp4') || txt.includes('video')) label = 'MP4 Video';
+    else {
+      const cdns = ['tikcdn','tiktok','cdn','muscdn','akamai'];
+      if (!cdns.some(c => href.includes(c))) return;
+      label = 'MP4 ' + (formats.length + 1);
+    }
+
+    if (seen.has(label)) return;
+    seen.add(label);
+    formats.push({ label, ext: label.includes('MP3') ? 'mp3' : 'mp4', url: href });
+  });
+
+  if (!formats.length) throw new Error('Download links not found — video may be private');
+  return { title, thumb, formats, platform: 'tiktok' };
+}
+
+// ── Instagram via snapinsta.app ─────────────────────────────────────────────
+async function fetchInstagram(url) {
+  const homeRes  = await proxyFetch('https://snapinsta.app/');
+  const homeHtml = await homeRes.text();
+  const tokenMatch = homeHtml.match(/name="token"\s+value="([^"]+)"/i)
+                  || homeHtml.match(/"_token"\s*:\s*"([^"]+)"/i);
+  const token = tokenMatch ? tokenMatch[1] : '';
+
+  const formData = new URLSearchParams({ url, token, lang: 'en' });
+  const res = await proxyFetch('https://snapinsta.app/action.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: formData.toString(),
+  });
+  const data = await res.json().catch(() => null);
+  const html  = data?.data || '';
+
+  const parser = new DOMParser();
+  const doc    = parser.parseFromString(html, 'text/html');
+
+  const thumb   = doc.querySelector('img')?.src || null;
+  const formats = [];
+  const seen    = new Set();
+
+  doc.querySelectorAll('a[href]').forEach(a => {
+    const href = a.href || a.getAttribute('href') || '';
+    if (!href.startsWith('http')) return;
+    const txt = a.textContent.trim();
+    let label = 'Download';
+    if (txt.includes('1080') || txt.includes('HD'))    label = 'MP4 1080p HD';
+    else if (txt.includes('720'))                       label = 'MP4 720p';
+    else if (txt.includes('mp4') || txt.includes('Video')) label = 'MP4 Video';
+    else if (txt.includes('jpg') || txt.includes('Image')) label = 'JPG Image';
+    else label = 'Download ' + (formats.length + 1);
+
+    if (seen.has(label)) return;
+    seen.add(label);
+    formats.push({ label, ext: label.includes('JPG') ? 'jpg' : 'mp4', url: href });
+  });
+
+  if (!formats.length) throw new Error('No links found — post may be private');
+  return { title: 'Instagram Video', thumb, formats, platform: 'instagram' };
+}
+
+// ── Facebook via snapsave.app ──────────────────────────────────────────────
+async function fetchFacebook(url) {
+  const res = await proxyFetch('https://snapsave.app/action.php?lang=en', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ url }).toString(),
+  });
+  const data = await res.json().catch(() => null);
+  const html  = data?.data || '';
+
+  const parser = new DOMParser();
+  const doc    = parser.parseFromString(html, 'text/html');
+
+  const thumb   = doc.querySelector('img')?.src || null;
+  const formats = [];
+  const seen    = new Set();
+
+  doc.querySelectorAll('a[href]').forEach(a => {
+    const href = a.href || a.getAttribute('href') || '';
+    if (!href.startsWith('http') && !href.startsWith('//')) return;
+    const txt = a.textContent.trim().toLowerCase();
+
+    let label;
+    if (txt.includes('hd') || txt.includes('1080')) label = 'MP4 HD';
+    else if (txt.includes('sd') || txt.includes('480')) label = 'MP4 SD';
+    else if (txt.includes('mp3') || txt.includes('audio')) label = 'MP3 Audio';
+    else label = 'Download ' + (formats.length + 1);
+
+    if (seen.has(label)) return;
+    seen.add(label);
+    const fullHref = href.startsWith('//') ? 'https:' + href : href;
+    formats.push({ label, ext: label.includes('MP3') ? 'mp3' : 'mp4', url: fullHref });
+  });
+
+  if (!formats.length) throw new Error('No links found — video may be private');
+  return { title: 'Facebook Video', thumb, formats, platform: 'facebook' };
+}
+
+// ── YouTube via oembed (basic info) + y2mate ──────────────────────────────
+async function fetchYouTube(url) {
+  let title = 'YouTube Video', thumb = null, duration = null, author = null;
+  try {
+    const oe = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
+    if (oe.ok) {
+      const info = await oe.json();
+      title  = info.title          || title;
+      thumb  = info.thumbnail_url  || null;
+      author = info.author_name    || null;
+    }
+  } catch(e) {}
+
+  const formats = [];
+  try {
+    const r = await proxyFetch('https://www.y2mate.com/mates/analyzeV2/ajax', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ k_query: url, k_page: 'home', hl: 'en', q_auto: 0 }).toString(),
+    });
+    const d = await r.json();
+    if (d?.t) duration = d.t;   // e.g. "3:45"
+    if (d?.links?.mp4) {
+      ['1080p','720p','480p','360p'].forEach(q => {
+        const key = Object.keys(d.links.mp4).find(k => k.includes(q.replace('p','')));
+        if (key) formats.push({ label:`MP4 ${q}`, ext:'mp4', url:null, k:d.links.mp4[key]?.k, vid:d.vid });
+      });
+    }
+    if (d?.links?.mp3) {
+      const k128 = Object.keys(d.links.mp3).find(k => k.includes('128'));
+      if (k128) formats.push({ label:'MP3 Audio', ext:'mp3', url:null, k:d.links.mp3[k128]?.k, vid:d.vid });
+    }
+  } catch(e) {
+    // y2mate busy — show fallback only
+  }
+
+  if (!formats.length) {
+    formats.push({ label:'Open in Y2Mate', ext:'mp4', url:`https://www.y2mate.com/youtube/${url}`, external:true });
+  }
+
+  return { title, thumb, duration, author, formats, platform:'youtube' };
+}
+
+// ── Render results ─────────────────────────────────────────────────────────
+function renderResults(data) {
+  if (data.thumb) {
+    const img = document.createElement('img');
+    img.src = data.thumb;
+    img.onload = () => { $('thumbWrap').innerHTML = ''; $('thumbWrap').appendChild(img); };
+  }
+  $('vidTitle').textContent = data.title || '—';
+  $('vidMeta').textContent  = PLATFORM_META[data.platform]?.label || data.platform;
+
+  // Stats chips
+  const statsEl = $('vidStats');
+  statsEl.innerHTML = '';
+  const addChip = (icon, text) => {
+    if (!text) return;
+    const chip = document.createElement('div');
+    chip.className = 'stat-chip';
+    chip.innerHTML = `<span class="si">${icon}</span>${text}`;
+    statsEl.appendChild(chip);
+  };
+  if (data.duration)  addChip('⏱', data.duration);
+  if (data.views)     addChip('👁', fmtViews(data.views));
+  if (data.author)    addChip('👤', data.author);
+  if (data.platform)  addChip('📌', PLATFORM_META[data.platform]?.label || data.platform);
+
+  // Format buttons with copy-link button
+  const grid = $('fmtGrid');
+  grid.innerHTML = '';
+  data.formats.forEach(f => {
+    const row = document.createElement('div');
+    row.className = 'fmt-row';
+
+    const btn = document.createElement('button');
+    btn.className = 'fmt-btn';
+    btn.innerHTML = `<div class="fl">${f.label}</div><div class="fs">${f.ext.toUpperCase()}${f.external ? ' ↗' : ''}</div>`;
+    btn.onclick = () => f.external ? window.open(f.url, '_blank') : startDownload(f, data.title);
+
+    row.appendChild(btn);
+
+    // Copy-link button — only if direct URL is available
+    if (f.url && !f.external) {
+      const cpBtn = document.createElement('button');
+      cpBtn.className = 'copy-btn';
+      cpBtn.title = 'Copy download link';
+      cpBtn.innerHTML = `<span>📋</span><span class="copy-tooltip">Copied!</span>`;
+      cpBtn.onclick = (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(f.url).then(() => {
+          cpBtn.classList.add('copied');
+          setTimeout(() => cpBtn.classList.remove('copied'), 1800);
+        }).catch(() => {
+          // fallback for older browsers
+          const ta = document.createElement('textarea');
+          ta.value = f.url;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          cpBtn.classList.add('copied');
+          setTimeout(() => cpBtn.classList.remove('copied'), 1800);
+        });
+      };
+      row.appendChild(cpBtn);
+    }
+
+    grid.appendChild(row);
+  });
+
+  $('results').classList.add('show');
+}
+
+function fmtViews(n) {
+  if (n >= 1e9) return (n/1e9).toFixed(1) + 'B views';
+  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M views';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'K views';
+  return n + ' views';
+}
+
+// ── Download ───────────────────────────────────────────────────────────────
+async function startDownload(fmt, title) {
+  $('results').classList.remove('show');
+  $('progressEl').classList.add('show');
+  $('progBar').style.width = '0%';
+  $('progPct').textContent = '0%';
+  $('progLabel').textContent = `Preparing ${fmt.label}…`;
+
+  let pct = 0;
+  const ticker = setInterval(() => {
+    if (pct < 85) pct += Math.random() * 6 + 2;
+    $('progBar').style.width = pct + '%';
+    $('progPct').textContent = Math.round(pct) + '%';
+  }, 200);
+
+  try {
+    let downloadUrl = fmt.url;
+
+    // y2mate convert step
+    if (!downloadUrl && fmt.k && fmt.vid) {
+      const r = await proxyFetch('https://www.y2mate.com/mates/convertV2/index', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ vid: fmt.vid, k: fmt.k }).toString(),
+      });
+      const d = await r.json();
+      downloadUrl = d?.dlink || null;
+    }
+
+    clearInterval(ticker);
+
+    if (!downloadUrl) throw new Error('Download URL not found');
+
+    // Trigger download via anchor
+    $('progBar').style.width = '100%';
+    $('progPct').textContent = '100%';
+
+    const a = document.createElement('a');
+    a.href     = downloadUrl;
+    a.download = `${(title||'video').substring(0,50)}.${fmt.ext}`;
+    a.target   = '_blank';
+    a.rel      = 'noopener';
+    a.click();
+
+    setTimeout(() => {
+      $('progressEl').classList.remove('show');
+      $('sucDesc').textContent = `${fmt.label} · "${(title||'').substring(0,35)}…"`;
+      $('successEl').classList.add('show');
+    }, 600);
+
+  } catch(e) {
+    clearInterval(ticker);
+    $('progressEl').classList.remove('show');
+    showError(e.message);
+  }
+}
+
+function resetResults() {
+  ['results','progressEl','successEl','errorBox'].forEach(id => $( id).classList.remove('show'));
+  $('thumbWrap').innerHTML = '🎬';
+  $('fmtGrid').innerHTML   = '';
+  $('vidStats').innerHTML  = '';
+  $('progBar').style.width = '0%';
+}
+function resetAll() {
+  $('urlInput').value = '';
+  $('detBar').classList.remove('show');
+  currentUrl = '';
+  currentPlatform = '';
+  resetResults();
+}
+</script>
+</body>
+</html>
