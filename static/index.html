@@ -389,18 +389,31 @@ async function startDownload(fmt, title) {
       URL.revokeObjectURL(a.href);
 
     } else {
-      // Direct URL download
+      // Stream via backend (avoids CORS block)
       if (!fmt.url) throw new Error('Download URL not found');
+      $('progLabel').textContent = 'Downloading via server…';
+      const r = await fetch(`${API}/api/stream`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          url: fmt.url,
+          ext: fmt.ext || 'mp4',
+          filename: (title||'video').substring(0,50),
+        }),
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.detail || 'Stream failed');
+      }
       clearInterval(ticker);
       $('progBar').style.width = '100%';
       $('progPct').textContent = '100%';
-
+      const blob = await r.blob();
       const a = document.createElement('a');
-      a.href     = fmt.url;
-      a.download = `${(title||'video').substring(0,50)}.${fmt.ext}`;
-      a.target   = '_blank';
-      a.rel      = 'noopener';
+      a.href = URL.createObjectURL(blob);
+      a.download = `${(title||'video').substring(0,50)}.${fmt.ext||'mp4'}`;
       a.click();
+      URL.revokeObjectURL(a.href);
     }
 
     setTimeout(() => {
