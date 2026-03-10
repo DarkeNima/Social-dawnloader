@@ -1,11 +1,10 @@
 
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import yt_dlp, os, re, tempfile, requests
+import yt_dlp, os, re, tempfile, requests, asyncio
 
 app = FastAPI(docs_url=None, redoc_url=None)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -16,7 +15,6 @@ if os.path.exists(static_dir):
 
 DOWNLOAD_DIR = tempfile.mkdtemp()
 
-# ── Platform detection ─────────────────────────────────────────────────────
 def detect_platform(url: str) -> str:
     u = url.lower()
     if "youtube.com" in u or "youtu.be" in u: return "youtube"
@@ -25,46 +23,6 @@ def detect_platform(url: str) -> str:
     if "facebook.com" in u or "fb.watch" in u: return "facebook"
     return "unknown"
 
-# ── yt-dlp per-platform options ────────────────────────────────────────────
-def get_opts(platform: str) -> dict:
-    base = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "socket_timeout": 20,
-    }
-
-    if platform == "youtube":
-        base.update({
-            "extractor_args": {"youtube": {"player_client": ["ios"]}},
-            "http_headers": {
-                "User-Agent": "com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 16_1 like Mac OS X)",
-            }
-        })
-
-    elif platform == "tiktok":
-        base.update({
-            "extractor_args": {
-                "tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"},
-            },
-            "http_headers": {
-                "User-Agent": "TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet",
-            }
-        })
-
-    elif platform in ("facebook", "instagram"):
-        base.update({
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/122.0.0.0 Safari/537.36",
-            }
-        })
-
-    return base
-
-
-# ── Format duration ────────────────────────────────────────────────────────
 def fmt_duration(secs):
     if not secs: return None
     m, s = divmod(int(secs), 60)
@@ -77,64 +35,139 @@ def fmt_views(v):
     if v >= 1_000: return f"{v/1_000:.1f}K views"
     return f"{v} views"
 
+def fmt_size(b):
+    if not b: return ""
+    if b >= 1_000_000: return f"~{b/1_000_000:.0f}MB"
+    if b >= 1_000: return f"~{b/1_000:.0f}KB"
+    return ""
 
-# ── Core scraper ───────────────────────────────────────────────────────────
-def scrape_info(url: str) -> dict:
-    platform = detect_platform(url)
-    opts = get_opts(platform)
 
+# ── YouTube info — try multiple clients ───────────────────────────────────
+def scrape_youtube(url):
+    clients = ["ios", "mweb", "android", "tv_embedded"]
+    last_err = ""
+    for client in clients:
+        try:
+            opts = {
+                "quiet": True, "no_warnings": True, "skip_download": True,
+                "extractor_args": {"youtube": {"player_client": [client]}},
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            return build_result(info, "youtube")
+        except Exception as e:
+            last_err = str(e)
+            continue
+    raise Exception(last_err)
+
+
+# ── TikTok info ────────────────────────────────────────────────────────────
+def scrape_tiktok(url):
+    opts = {
+        "quiet": True, "no_warnings": True, "skip_download": True,
+        "extractor_args": {
+            "tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"},
+        },
+        "http_headers": {
+            "User-Agent": "TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet",
+        }
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    return build_result(info, "tiktok")
+
+
+# ── Facebook / Instagram — download+merge then stream ─────────────────────
+def scrape_fb_ig(url, platform):
+    """
+    For FB/IG: yt-dlp download best quality (merges audio+video)
+    Returns a special 'download' type format pointing to /api/download
+    """
+    opts = {
+        "quiet": True, "no_warnings": True, "skip_download": True,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+        }
+    }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
-    # Handle playlists
     if info.get("entries"):
         info = list(info["entries"])[0]
 
-    formats_raw = info.get("formats", [])
+    # Build formats — prefer combined audio+video
     formats, seen = [], set()
-
-    for f in formats_raw:
+    for f in info.get("formats", []):
         vcodec = f.get("vcodec", "none")
         acodec = f.get("acodec", "none")
         res    = f.get("height")
         furl   = f.get("url", "")
         fsize  = f.get("filesize") or f.get("filesize_approx")
+        if not furl: continue
 
-        if not furl or furl.startswith("manifest"):
-            continue
+        # Combined stream (has both video + audio) — best for direct download
+        if vcodec != "none" and acodec != "none" and res:
+            label = f"MP4 {res}p"
+            if label not in seen:
+                seen.add(label)
+                formats.append({
+                    "label": label, "ext": "mp4",
+                    "url": furl, "filesize": fsize,
+                    "sub": fmt_size(fsize),
+                })
 
-        # Video with audio (best for FB/IG/TT)
-        if vcodec != "none" and acodec != "none" and res and furl:
+    # If no combined streams found, use /api/download to merge server-side
+    if not formats:
+        formats = [
+            {"label": "MP4 Best Quality", "ext": "mp4",
+             "url": None, "download_url": url, "merge": True,
+             "sub": "server-side merge"},
+            {"label": "MP4 SD", "ext": "mp4",
+             "url": None, "download_url": url + "::sd", "merge": True,
+             "sub": "smaller file"},
+        ]
+
+    return {
+        "title":    info.get("title", "Video"),
+        "thumb":    info.get("thumbnail"),
+        "author":   info.get("uploader") or info.get("channel"),
+        "duration": fmt_duration(info.get("duration")),
+        "views":    fmt_views(info.get("view_count")),
+        "platform": platform,
+        "formats":  formats[:6],
+    }
+
+
+# ── Generic format builder ─────────────────────────────────────────────────
+def build_result(info, platform):
+    if info.get("entries"):
+        info = list(info["entries"])[0]
+
+    formats, seen = [], set()
+    for f in info.get("formats", []):
+        vcodec = f.get("vcodec", "none")
+        acodec = f.get("acodec", "none")
+        res    = f.get("height")
+        furl   = f.get("url", "")
+        fsize  = f.get("filesize") or f.get("filesize_approx")
+        if not furl: continue
+
+        if vcodec != "none" and res:
             label = f"MP4 {res}p"
             if label not in seen:
                 seen.add(label)
                 formats.append({"label": label, "ext": "mp4", "url": furl,
-                                 "filesize": fsize, "has_audio": True})
+                                 "filesize": fsize, "sub": fmt_size(fsize)})
+        elif vcodec == "none" and acodec != "none":
+            if "MP3 Audio" not in seen:
+                seen.add("MP3 Audio")
+                formats.append({"label": "MP3 Audio", "ext": "mp3", "url": furl,
+                                 "filesize": fsize, "sub": fmt_size(fsize)})
 
-        # Video only
-        elif vcodec != "none" and acodec == "none" and res and furl:
-            label = f"MP4 {res}p (video)"
-            if label not in seen:
-                seen.add(label)
-                formats.append({"label": f"MP4 {res}p", "ext": "mp4", "url": furl,
-                                 "filesize": fsize, "has_audio": False})
-
-        # Audio only
-        elif vcodec == "none" and acodec != "none" and furl:
-            label = "MP3 Audio"
-            if label not in seen:
-                seen.add(label)
-                formats.append({"label": label, "ext": "mp3", "url": furl,
-                                 "filesize": fsize})
-
-    # Sort: video+audio first, then by resolution desc, audio last
     def sort_key(f):
         nums = re.findall(r'\d+', f["label"])
-        res_num = int(nums[0]) if nums else 0
-        is_audio = f["label"] == "MP3 Audio"
-        has_audio = f.get("has_audio", True)
-        return (is_audio, not has_audio, -res_num)
-
+        return (f["label"] == "MP3 Audio", -(int(nums[0]) if nums else 0))
     formats.sort(key=sort_key)
 
     return {
@@ -155,61 +188,83 @@ class InfoRequest(BaseModel):
 @app.post("/api/info")
 async def get_info(req: InfoRequest):
     url = req.url.strip()
-    if not url:
-        raise HTTPException(400, "URL නෑ")
-    if detect_platform(url) == "unknown":
-        raise HTTPException(422, "YouTube, TikTok, Instagram හෝ Facebook link එකක් paste කරන්න")
+    platform = detect_platform(url)
+    if platform == "unknown":
+        raise HTTPException(422, "YouTube, TikTok, Instagram හෝ Facebook link paste කරන්න")
     try:
-        return scrape_info(url)
+        if platform == "youtube":
+            return scrape_youtube(url)
+        elif platform == "tiktok":
+            return scrape_tiktok(url)
+        else:
+            return scrape_fb_ig(url, platform)
     except yt_dlp.utils.DownloadError as e:
         err = str(e)
-        if "Sign in" in err or "bot" in err or "confirm" in err:
-            raise HTTPException(422, "YouTube: bot check — ටිකක් delay කරලා try කරන්න")
-        if "private" in err.lower():
-            raise HTTPException(422, "Private video — download කරන්න බෑ")
-        if "available" in err.lower() or "status code 0" in err:
-            raise HTTPException(422, "Video available නෑ — link check කරන්න")
+        if "Sign in" in err or "bot" in err: raise HTTPException(422, "YouTube bot check — ටිකක් delay කරලා try කරන්න")
+        if "private" in err.lower(): raise HTTPException(422, "Private video")
+        if "status code 0" in err or "available" in err.lower(): raise HTTPException(422, "Video available නෑ — full TikTok link paste කරන්න")
         raise HTTPException(422, err[:250])
     except Exception as e:
         raise HTTPException(500, str(e)[:250])
 
 
-class StreamRequest(BaseModel):
+# ── Server-side download+merge for FB/IG ──────────────────────────────────
+class DownloadRequest(BaseModel):
     url: str
-    ext: str = "mp4"
-    filename: str = "saveit_video"
+    quality: str = "best"
 
-@app.post("/api/stream")
-async def stream_file(req: StreamRequest):
+@app.post("/api/download")
+async def download_merge(req: DownloadRequest):
+    """Download + merge audio+video server-side, stream back."""
+    url = req.url.replace("::sd", "")
+    quality = "worstvideo+worstaudio/worst" if "::sd" in req.url else "bestvideo+bestaudio/best"
+
+    out_tmpl = os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s")
+    opts = {
+        "quiet": True, "no_warnings": True,
+        "format": quality,
+        "outtmpl": out_tmpl,
+        "merge_output_format": "mp4",
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+        }
+    }
     try:
-        s = requests.Session()
-        s.headers["User-Agent"] = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36"
-        )
-        r = s.get(req.url, stream=True, timeout=30)
-        r.raise_for_status()
-        ct = r.headers.get("Content-Type", f"video/{req.ext}")
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            if not filename.endswith(".mp4"):
+                filename = os.path.splitext(filename)[0] + ".mp4"
+
+        if not os.path.exists(filename):
+            raise HTTPException(500, "File not created")
+
         def gen():
-            for chunk in r.iter_content(65536):
-                yield chunk
-        return StreamingResponse(gen(), media_type=ct, headers={
-            "Content-Disposition": f'attachment; filename="{req.filename}.{req.ext}"'
+            with open(filename, "rb") as f:
+                while chunk := f.read(65536):
+                    yield chunk
+            os.unlink(filename)  # cleanup
+
+        title = info.get("title", "video")[:40]
+        safe_title = re.sub(r'[^\w\s-]', '', title).strip()
+
+        return StreamingResponse(gen(), media_type="video/mp4", headers={
+            "Content-Disposition": f'attachment; filename="{safe_title}.mp4"',
+            "Content-Length": str(os.path.getsize(filename)),
         })
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, str(e)[:200])
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "engine": "yt-dlp v4"}
+    return {"status": "ok", "engine": "yt-dlp v5"}
 
 @app.get("/")
 async def root():
     index = os.path.join(static_dir, "index.html")
-    if os.path.exists(index):
-        return FileResponse(index)
-    return {"status": "SaveIt API running"}
+    return FileResponse(index) if os.path.exists(index) else {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn
