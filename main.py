@@ -21,7 +21,20 @@ app.add_middleware(
 )
 
 # ── Serve frontend ─────────────────────────────────────────────────────────
-app.mount("/static", StaticFiles(directory="static"), name="static")
+import os
+
+# ── Serve frontend ─────────────────────────────────────────────────────────
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+@app.get("/")
+async def root():
+    from fastapi.responses import FileResponse
+    index = os.path.join(static_dir, "index.html")
+    if os.path.exists(index):
+        return FileResponse(index)
+    return {"status": "SaveIt API running — place index.html in /static/"}
 
 DOWNLOAD_DIR = tempfile.mkdtemp()
 
@@ -33,45 +46,24 @@ SESSION.headers.update({
                   "Chrome/124.0.0.0 Safari/537.36",
 })
 
-# ── Internal proxy fallback chain (hidden from frontend!) ──────────────────
-PROXIES = [
-    lambda u: f"https://corsproxy.io/?url={requests.utils.quote(u, safe='')}",
-    lambda u: f"https://api.allorigins.win/raw?url={requests.utils.quote(u, safe='')}",
-    lambda u: f"https://thingproxy.freeboard.io/fetch/{u}",
-]
-
+# ── Direct request helpers (no proxy needed — we ARE the server!) ──────────
 def proxy_get(url, **kwargs):
-    """Try each proxy in order. Raise on all failures."""
-    last_err = ""
-    for make_proxy in PROXIES:
-        try:
-            r = SESSION.get(make_proxy(url), timeout=12, **kwargs)
-            if r.status_code in (429, 403, 407) or r.status_code >= 500:
-                last_err = f"HTTP {r.status_code}"
-                continue
-            if r.ok:
-                return r
-        except Exception as e:
-            last_err = str(e)
-    raise RuntimeError(f"All proxies failed: {last_err}")
+    """Direct GET — backend has no CORS restrictions."""
+    r = SESSION.get(url, timeout=15, **kwargs)
+    if not r.ok:
+        raise RuntimeError(f"Request failed: HTTP {r.status_code} → {url}")
+    return r
 
 def proxy_post(url, data, **kwargs):
-    last_err = ""
-    for make_proxy in PROXIES:
-        try:
-            r = SESSION.post(
-                make_proxy(url), data=data,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=15, **kwargs,
-            )
-            if r.status_code in (429, 403, 407) or r.status_code >= 500:
-                last_err = f"HTTP {r.status_code}"
-                continue
-            if r.ok:
-                return r
-        except Exception as e:
-            last_err = str(e)
-    raise RuntimeError(f"All proxies failed: {last_err}")
+    """Direct POST — backend has no CORS restrictions."""
+    r = SESSION.post(
+        url, data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=20, **kwargs,
+    )
+    if not r.ok:
+        raise RuntimeError(f"Request failed: HTTP {r.status_code} → {url}")
+    return r
 
 
 # ── Platform detection ─────────────────────────────────────────────────────
@@ -199,45 +191,51 @@ def scrape_facebook(url: str) -> dict:
 
 
 def scrape_youtube(url: str) -> dict:
-    title, thumb, author, duration = "YouTube Video", None, None, None
     try:
-        oe = SESSION.get(
-            f"https://www.youtube.com/oembed?url={requests.utils.quote(url)}&format=json",
-            timeout=8,
-        )
-        if oe.ok:
-            info   = oe.json()
-            title  = info.get("title", title)
-            thumb  = info.get("thumbnail_url")
-            author = info.get("author_name")
-    except: pass
+        opts = {
+            "quiet": True,
+            "skip_download": True,
+            "format": "bestvideo+bestaudio/best",
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
 
-    formats = []
-    try:
-        r = proxy_post(
-            "https://www.y2mate.com/mates/analyzeV2/ajax",
-            data={"k_query": url, "k_page": "home", "hl": "en", "q_auto": "0"},
-        )
-        d = r.json()
-        if d.get("t"): duration = d["t"]
-        for q in ["1080p","720p","480p","360p"]:
-            key = next((k for k in (d.get("links",{}).get("mp4") or {}) if q.replace("p","") in k), None)
-            if key:
-                formats.append({"label": f"MP4 {q}", "ext": "mp4",
-                                 "url": None, "k": d["links"]["mp4"][key].get("k"), "vid": d.get("vid")})
-        mp3s = d.get("links",{}).get("mp3") or {}
-        k128 = next((k for k in mp3s if "128" in k), None)
-        if k128:
-            formats.append({"label": "MP3 Audio", "ext": "mp3",
-                             "url": None, "k": mp3s[k128].get("k"), "vid": d.get("vid")})
-    except: pass
+        formats, seen = [], set()
+        for f in info.get("formats", []):
+            vcodec = f.get("vcodec", "none")
+            acodec = f.get("acodec", "none")
+            res    = f.get("height")
+            fid    = f.get("format_id")
+            furl   = f.get("url")
 
-    if not formats:
-        formats.append({"label":"Open Y2Mate","ext":"mp4",
-                         "url": f"https://www.y2mate.com/youtube/{url}", "external": True})
+            if vcodec != "none" and res and furl:
+                label = f"MP4 {res}p"
+                if label not in seen:
+                    seen.add(label)
+                    formats.append({"label": label, "ext": "mp4",
+                                    "url": furl, "format_id": fid})
+            elif vcodec == "none" and acodec != "none" and furl:
+                label = "MP3 Audio"
+                if label not in seen:
+                    seen.add(label)
+                    formats.append({"label": label, "ext": "mp3",
+                                    "url": furl, "format_id": fid})
 
-    return {"title": title, "thumb": thumb, "author": author,
-            "duration": duration, "platform": "youtube", "formats": formats}
+        formats.sort(key=lambda x: (
+            x["type"] == "audio" if "type" in x else False,
+            -(int(re.sub(r"[^0-9]", "", x["label"]) or "0"))
+        ))
+
+        return {
+            "title":    info.get("title", "YouTube Video"),
+            "thumb":    info.get("thumbnail"),
+            "author":   info.get("uploader"),
+            "duration": str(int(info.get("duration", 0) or 0)) + "s",
+            "platform": "youtube",
+            "formats":  formats[:8],
+        }
+    except Exception as e:
+        raise ValueError(str(e))
 
 
 # ── API routes ─────────────────────────────────────────────────────────────
@@ -260,26 +258,6 @@ async def get_info(req: InfoRequest):
         if platform == "youtube":   return scrape_youtube(url)
     except Exception as e:
         raise HTTPException(422, str(e))
-
-
-class ConvertRequest(BaseModel):
-    vid: str
-    k:   str
-
-@app.post("/api/yt-convert")
-async def yt_convert(req: ConvertRequest):
-    """YouTube y2mate convert step — hidden from frontend."""
-    try:
-        r = proxy_post(
-            "https://www.y2mate.com/mates/convertV2/index",
-            data={"vid": req.vid, "k": req.k},
-        )
-        d = r.json()
-        if d.get("dlink"):
-            return {"url": d["dlink"]}
-        raise HTTPException(422, "Convert failed")
-    except Exception as e:
-        raise HTTPException(500, str(e))
 
 
 class StreamRequest(BaseModel):
@@ -307,7 +285,7 @@ async def stream_file(req: StreamRequest):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "proxies": len(PROXIES)}
+    return {"status": "ok", "mode": "direct"}
 
 @app.get("/")
 async def root():
