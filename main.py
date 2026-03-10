@@ -1,13 +1,3 @@
-"""
-SaveIt – FastAPI Backend
-All proxy/scraping logic is server-side. Frontend only sees clean JSON.
-
-Install:
-    pip install fastapi uvicorn requests beautifulsoup4 yt-dlp
-
-Run:
-    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-"""
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
