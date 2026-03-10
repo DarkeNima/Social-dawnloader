@@ -2,244 +2,142 @@
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import requests
-from bs4 import BeautifulSoup
 import yt_dlp
-import re, os, tempfile, time
+import os, re, tempfile, requests
 
-app = FastAPI(docs_url=None, redoc_url=None)  # hide /docs in production
+app = FastAPI(docs_url=None, redoc_url=None)
 
-# ── CORS — allow only your own domain in production ────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Change to ["https://yourdomain.com"] in production
+    allow_origins=["*"],
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
 
-# ── Serve frontend ─────────────────────────────────────────────────────────
-import os
-
-# ── Serve frontend ─────────────────────────────────────────────────────────
+# Serve frontend
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-@app.get("/")
-async def root():
-    from fastapi.responses import FileResponse
-    index = os.path.join(static_dir, "index.html")
-    if os.path.exists(index):
-        return FileResponse(index)
-    return {"status": "SaveIt API running — place index.html in /static/"}
-
 DOWNLOAD_DIR = tempfile.mkdtemp()
 
-# ── Session with rotating User-Agent ──────────────────────────────────────
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/124.0.0.0 Safari/537.36",
-})
-
-# ── Direct request helpers (no proxy needed — we ARE the server!) ──────────
-def proxy_get(url, **kwargs):
-    """Direct GET — backend has no CORS restrictions."""
-    r = SESSION.get(url, timeout=15, **kwargs)
-    if not r.ok:
-        raise RuntimeError(f"Request failed: HTTP {r.status_code} → {url}")
-    return r
-
-def proxy_post(url, data, **kwargs):
-    """Direct POST — backend has no CORS restrictions."""
-    r = SESSION.post(
-        url, data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        timeout=20, **kwargs,
-    )
-    if not r.ok:
-        raise RuntimeError(f"Request failed: HTTP {r.status_code} → {url}")
-    return r
+# ── yt-dlp options ─────────────────────────────────────────────────────────
+def get_ydl_opts(extra={}):
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        # Bypass bot detection
+        "extractor_args": {
+            "youtube": {"player_client": ["android", "web"]},
+        },
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/90.0.4430.91 Mobile Safari/537.36",
+        },
+    }
+    opts.update(extra)
+    return opts
 
 
 # ── Platform detection ─────────────────────────────────────────────────────
 def detect_platform(url: str) -> str:
     u = url.lower()
     if "youtube.com" in u or "youtu.be" in u:  return "youtube"
-    if "tiktok.com"  in u or "vm.tiktok" in u: return "tiktok"
+    if "tiktok.com"  in u or "vm.tiktok" in u or "vt.tiktok" in u: return "tiktok"
     if "instagram.com" in u:                    return "instagram"
     if "facebook.com" in u or "fb.watch" in u:  return "facebook"
     return "unknown"
 
 
-# ── Scrapers (all hidden server-side) ─────────────────────────────────────
+# ── Info scraper using yt-dlp ──────────────────────────────────────────────
+def scrape_info(url: str) -> dict:
+    platform = detect_platform(url)
 
-def scrape_tiktok(url: str) -> dict:
-    home    = proxy_get("https://ssstik.io/en")
-    match   = re.search(r'name="tt"\s+value="([^"]+)"', home.text)
-    if not match:
-        raise ValueError("ssstik token not found")
-    token   = match.group(1)
+    with yt_dlp.YoutubeDL(get_ydl_opts()) as ydl:
+        info = ydl.extract_info(url, download=False)
 
-    resp = proxy_post(
-        "https://ssstik.io/abc?url=dl",
-        data={"id": url, "locale": "en", "tt": token},
-    )
-    soup    = BeautifulSoup(resp.text, "html.parser")
-    thumb   = soup.find("img", {"class": re.compile(r"result_image|mainpicture", re.I)})
-    title_t = soup.find(class_=re.compile(r"maintext|result_author", re.I))
-
+    # Build format list
     formats, seen = [], set()
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if not href.startswith("http"): continue
-        txt  = a.get_text(strip=True).lower()
+    
+    # Check if it's a playlist/multiple entries
+    entries = info.get("entries")
+    if entries:
+        info = entries[0]
 
-        if "watermark" in txt and ("no" in txt or "without" in txt): label = "MP4 No Watermark"
-        elif "hd" in txt:        label = "MP4 HD"
-        elif "watermark" in txt: label = "MP4 With Watermark"
-        elif "mp3" in txt or "audio" in txt: label = "MP3 Audio"
-        elif "mp4" in txt or "video" in txt: label = "MP4 Video"
-        else:
-            if not any(c in href for c in ["tikcdn","tiktok","cdn","muscdn"]): continue
-            label = f"MP4 {len(formats)+1}"
+    for f in info.get("formats", []):
+        vcodec  = f.get("vcodec", "none")
+        acodec  = f.get("acodec", "none")
+        res     = f.get("height")
+        fid     = f.get("format_id")
+        furl    = f.get("url", "")
+        ext     = f.get("ext", "mp4")
+        fsize   = f.get("filesize") or f.get("filesize_approx")
 
-        if label in seen: continue
-        seen.add(label)
-        formats.append({"label": label, "ext": "mp3" if "mp3" in label.lower() else "mp4", "url": href})
+        # Video formats
+        if vcodec != "none" and res and furl:
+            label = f"MP4 {res}p"
+            if label not in seen:
+                seen.add(label)
+                formats.append({
+                    "label":    label,
+                    "ext":      "mp4",
+                    "url":      furl,
+                    "filesize": fsize,
+                    "format_id": fid,
+                })
 
-    if not formats:
-        raise ValueError("No download links found — video may be private")
+        # Audio only
+        elif vcodec == "none" and acodec != "none" and furl:
+            label = "MP3 Audio"
+            if label not in seen:
+                seen.add(label)
+                formats.append({
+                    "label":    label,
+                    "ext":      "mp3",
+                    "url":      furl,
+                    "filesize": fsize,
+                    "format_id": fid,
+                })
+
+    # Sort: highest res first, audio last
+    def sort_key(f):
+        nums = re.findall(r'\d+', f["label"])
+        return (f["label"] == "MP3 Audio", -(int(nums[0]) if nums else 0))
+    formats.sort(key=sort_key)
+
+    # Duration formatting
+    dur = info.get("duration")
+    dur_str = None
+    if dur:
+        m, s = divmod(int(dur), 60)
+        h, m = divmod(m, 60)
+        dur_str = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+    # View count formatting
+    views = info.get("view_count")
+    views_str = None
+    if views:
+        if views >= 1_000_000: views_str = f"{views/1_000_000:.1f}M views"
+        elif views >= 1_000:   views_str = f"{views/1_000:.1f}K views"
+        else:                  views_str = f"{views} views"
 
     return {
-        "title":    title_t.get_text(strip=True) if title_t else "TikTok Video",
-        "thumb":    thumb["src"] if thumb else None,
-        "platform": "tiktok",
-        "formats":  formats,
+        "title":    info.get("title", "Video"),
+        "thumb":    info.get("thumbnail"),
+        "author":   info.get("uploader") or info.get("channel"),
+        "duration": dur_str,
+        "views":    views_str,
+        "platform": platform,
+        "formats":  formats[:8],
     }
 
 
-def scrape_instagram(url: str) -> dict:
-    home       = proxy_get("https://snapinsta.app/")
-    tok_match  = re.search(r'name="token"\s+value="([^"]+)"', home.text, re.I) \
-              or re.search(r'"_token"\s*:\s*"([^"]+)"', home.text, re.I)
-    token      = tok_match.group(1) if tok_match else ""
-
-    resp = proxy_post(
-        "https://snapinsta.app/action.php",
-        data={"url": url, "token": token, "lang": "en"},
-    )
-    data   = resp.json() if resp.headers.get("content-type","").startswith("application/json") else {}
-    html   = data.get("data", "")
-    soup   = BeautifulSoup(html, "html.parser")
-    thumb  = soup.find("img")
-    formats, seen = [], set()
-
-    for a in soup.find_all("a", href=True):
-        href = a.get("href","")
-        if not href.startswith("http"): continue
-        txt  = a.get_text(strip=True)
-        if "1080" in txt or "HD" in txt:   label = "MP4 1080p HD"
-        elif "720" in txt:                  label = "MP4 720p"
-        elif "mp4" in txt.lower():          label = "MP4 Video"
-        elif "jpg" in txt.lower():          label = "JPG Image"
-        else:                               label = f"Download {len(formats)+1}"
-        if label in seen: continue
-        seen.add(label)
-        formats.append({"label": label, "ext": "jpg" if "JPG" in label else "mp4", "url": href})
-
-    if not formats:
-        raise ValueError("No links found — post may be private")
-
-    return {"title": "Instagram Video", "thumb": thumb["src"] if thumb else None,
-            "platform": "instagram", "formats": formats}
-
-
-def scrape_facebook(url: str) -> dict:
-    resp  = proxy_post(
-        "https://snapsave.app/action.php?lang=en",
-        data={"url": url},
-    )
-    data   = resp.json() if resp.headers.get("content-type","").startswith("application/json") else {}
-    html   = data.get("data","")
-    soup   = BeautifulSoup(html, "html.parser")
-    thumb  = soup.find("img")
-    formats, seen = [], set()
-
-    for a in soup.find_all("a", href=True):
-        href = a.get("href","")
-        if not href.startswith("http") and not href.startswith("//"): continue
-        txt  = a.get_text(strip=True).lower()
-        if "hd" in txt or "1080" in txt:   label = "MP4 HD"
-        elif "sd" in txt or "480" in txt:  label = "MP4 SD"
-        elif "mp3" in txt:                 label = "MP3 Audio"
-        else:                              label = f"Download {len(formats)+1}"
-        if label in seen: continue
-        seen.add(label)
-        full = "https:" + href if href.startswith("//") else href
-        formats.append({"label": label, "ext": "mp3" if "MP3" in label else "mp4", "url": full})
-
-    if not formats:
-        raise ValueError("No links found — video may be private")
-
-    return {"title": "Facebook Video", "thumb": thumb["src"] if thumb else None,
-            "platform": "facebook", "formats": formats}
-
-
-def scrape_youtube(url: str) -> dict:
-    try:
-        opts = {
-            "quiet": True,
-            "skip_download": True,
-            "format": "bestvideo+bestaudio/best",
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-
-        formats, seen = [], set()
-        for f in info.get("formats", []):
-            vcodec = f.get("vcodec", "none")
-            acodec = f.get("acodec", "none")
-            res    = f.get("height")
-            fid    = f.get("format_id")
-            furl   = f.get("url")
-
-            if vcodec != "none" and res and furl:
-                label = f"MP4 {res}p"
-                if label not in seen:
-                    seen.add(label)
-                    formats.append({"label": label, "ext": "mp4",
-                                    "url": furl, "format_id": fid})
-            elif vcodec == "none" and acodec != "none" and furl:
-                label = "MP3 Audio"
-                if label not in seen:
-                    seen.add(label)
-                    formats.append({"label": label, "ext": "mp3",
-                                    "url": furl, "format_id": fid})
-
-        formats.sort(key=lambda x: (
-            x["type"] == "audio" if "type" in x else False,
-            -(int(re.sub(r"[^0-9]", "", x["label"]) or "0"))
-        ))
-
-        return {
-            "title":    info.get("title", "YouTube Video"),
-            "thumb":    info.get("thumbnail"),
-            "author":   info.get("uploader"),
-            "duration": str(int(info.get("duration", 0) or 0)) + "s",
-            "platform": "youtube",
-            "formats":  formats[:8],
-        }
-    except Exception as e:
-        raise ValueError(str(e))
-
-
-# ── API routes ─────────────────────────────────────────────────────────────
-
+# ── Routes ─────────────────────────────────────────────────────────────────
 class InfoRequest(BaseModel):
     url: str
 
@@ -247,17 +145,20 @@ class InfoRequest(BaseModel):
 async def get_info(req: InfoRequest):
     url = req.url.strip()
     if not url:
-        raise HTTPException(400, "No URL")
-    platform = detect_platform(url)
-    if platform == "unknown":
+        raise HTTPException(400, "No URL provided")
+    if detect_platform(url) == "unknown":
         raise HTTPException(422, "Unsupported platform")
     try:
-        if platform == "tiktok":    return scrape_tiktok(url)
-        if platform == "instagram": return scrape_instagram(url)
-        if platform == "facebook":  return scrape_facebook(url)
-        if platform == "youtube":   return scrape_youtube(url)
+        return scrape_info(url)
+    except yt_dlp.utils.DownloadError as e:
+        msg = str(e)
+        if "Sign in" in msg or "bot" in msg:
+            raise HTTPException(422, "YouTube bot check — try a different video")
+        if "Private" in msg or "private" in msg:
+            raise HTTPException(422, "This video is private")
+        raise HTTPException(422, msg[:200])
     except Exception as e:
-        raise HTTPException(422, str(e))
+        raise HTTPException(500, str(e)[:200])
 
 
 class StreamRequest(BaseModel):
@@ -267,10 +168,14 @@ class StreamRequest(BaseModel):
 
 @app.post("/api/stream")
 async def stream_file(req: StreamRequest):
-    """Proxy-stream a direct video URL to browser."""
+    """Stream video directly to browser."""
     try:
-        r = SESSION.get(req.url, stream=True, timeout=30,
-                        headers={"Referer": "https://ssstik.io"})
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) "
+                          "AppleWebKit/537.36 Chrome/90.0.4430.91 Mobile Safari/537.36"
+        })
+        r = session.get(req.url, stream=True, timeout=30)
         r.raise_for_status()
         ct = r.headers.get("Content-Type", f"video/{req.ext}")
         def gen():
@@ -285,15 +190,16 @@ async def stream_file(req: StreamRequest):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "mode": "direct"}
+    return {"status": "ok", "engine": "yt-dlp"}
 
 @app.get("/")
 async def root():
-    from fastapi.responses import FileResponse
-    return FileResponse("static/index.html")
+    index = os.path.join(static_dir, "index.html")
+    if os.path.exists(index):
+        return FileResponse(index)
+    return {"status": "SaveIt API running"}
 
-# ── Run ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))  # Railway sets PORT automatically
+    port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
