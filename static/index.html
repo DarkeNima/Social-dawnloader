@@ -1,1 +1,429 @@
-h
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>SaveIt – Download Anything</title>
+
+<script>
+// ── DevTools / Inspect Protection ─────────────────────────────────────────
+document.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('keydown', e => {
+  if (
+    e.key === 'F12' ||
+    (e.ctrlKey && e.shiftKey && ['I','i','J','j','C','c'].includes(e.key)) ||
+    (e.ctrlKey && ['U','u','S','s'].includes(e.key))
+  ) { e.preventDefault(); e.stopPropagation(); return false; }
+});
+(function devtoolsDetect() {
+  const threshold = 160;
+  function check() {
+    if (window.outerWidth - window.innerWidth > threshold ||
+        window.outerHeight - window.innerHeight > threshold) {
+      document.body.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;
+        height:100vh;font-family:sans-serif;font-size:1.1rem;color:#888">🔒 Access Restricted</div>`;
+    }
+  }
+  setInterval(check, 1000);
+})();
+</script>
+
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=Instrument+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0e0e0f;--surface:#18181b;--border:#2a2a2e;
+  --text:#f2f0eb;--muted:#6b6b70;--dim:#3a3a3f;
+  --yt:#FF0000;--tt:#69C9D0;--ig:#f77737;--fb:#1877F2;
+  --green:#3ecf8e;--green-dim:#1a3d2e;
+}
+body{font-family:'Instrument Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;overflow-x:hidden;user-select:none}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);background-size:40px 40px;opacity:.25;pointer-events:none;z-index:0}
+
+header{position:relative;z-index:10;padding:1.4rem 2rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);backdrop-filter:blur(8px);background:rgba(14,14,15,.8)}
+.logo{font-family:'Syne',sans-serif;font-size:1.5rem;font-weight:800;letter-spacing:-0.04em}
+.logo span{color:var(--green)}
+.header-right{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.tagline{font-size:.72rem;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+#proxyBadge{font-size:.65rem;color:var(--muted);transition:color .3s}
+
+main{flex:1;display:flex;flex-direction:column;align-items:center;padding:3.5rem 1.5rem 4rem;position:relative;z-index:1}
+
+.hero{text-align:center;max-width:620px;margin-bottom:2.5rem;animation:fadeUp .6s ease both}
+.hero h1{font-family:'Syne',sans-serif;font-size:clamp(2.2rem,6vw,4rem);font-weight:800;line-height:1.05;letter-spacing:-0.04em;margin-bottom:.9rem}
+.hero h1 .accent{color:var(--green)}
+.hero p{color:var(--muted);font-size:1rem;line-height:1.7;font-weight:300}
+
+.badges{display:flex;justify-content:center;gap:.5rem;flex-wrap:wrap;margin-top:1.4rem}
+.badge{display:flex;align-items:center;gap:6px;padding:5px 12px;border-radius:30px;font-size:.75rem;font-weight:500;border:1px solid var(--border);background:var(--surface)}
+.badge.yt{border-color:rgba(255,0,0,.3);color:var(--yt);background:rgba(255,0,0,.07)}
+.badge.tt{border-color:rgba(105,201,208,.3);color:var(--tt);background:rgba(105,201,208,.07)}
+.badge.ig{border-color:rgba(247,119,55,.3);color:var(--ig);background:rgba(247,119,55,.07)}
+.badge.fb{border-color:rgba(24,119,242,.3);color:var(--fb);background:rgba(24,119,242,.07)}
+.badge .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+
+.card{width:100%;max-width:640px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:1.8rem;animation:fadeUp .7s .1s ease both;box-shadow:0 0 60px rgba(0,0,0,.5)}
+.input-row{display:flex;gap:.6rem;background:#0e0e0f;border:1px solid var(--border);border-radius:12px;padding:.35rem .35rem .35rem 1rem;transition:border-color .2s}
+.input-row:focus-within{border-color:var(--green)}
+.input-row input{flex:1;background:transparent;border:none;font-size:.95rem;font-family:'Instrument Sans',sans-serif;color:var(--text);outline:none;min-width:0}
+.input-row input::placeholder{color:var(--muted)}
+.btn{border:none;border-radius:9px;padding:.7rem 1.4rem;font-size:.88rem;font-weight:500;font-family:'Instrument Sans',sans-serif;cursor:pointer;transition:all .2s;white-space:nowrap}
+.btn-go{background:var(--green);color:#000}
+.btn-go:hover{filter:brightness(1.1);transform:translateY(-1px)}
+.btn-go:disabled{background:var(--dim);color:var(--muted);cursor:not-allowed;transform:none;filter:none}
+
+.detected-bar{display:none;align-items:center;gap:8px;margin-top:1rem;padding:.7rem 1rem;border-radius:9px;font-size:.82rem;border:1px solid var(--border);background:#0e0e0f}
+.detected-bar.show{display:flex;animation:fadeIn .3s}
+.det-dot{width:9px;height:9px;border-radius:50%}
+.c-yt{color:var(--yt)!important;border-color:rgba(255,0,0,.3)!important;background:rgba(255,0,0,.07)!important}
+.c-tt{color:var(--tt)!important;border-color:rgba(105,201,208,.3)!important;background:rgba(105,201,208,.07)!important}
+.c-ig{color:var(--ig)!important;border-color:rgba(247,119,55,.3)!important;background:rgba(247,119,55,.07)!important}
+.c-fb{color:var(--fb)!important;border-color:rgba(24,119,242,.3)!important;background:rgba(24,119,242,.07)!important}
+
+.status{display:none;align-items:center;gap:8px;margin-top:1.1rem;font-size:.82rem;color:var(--muted)}
+.status.show{display:flex;animation:fadeIn .3s}
+.spin{width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+
+.error{display:none;margin-top:1rem;padding:.9rem 1.1rem;background:rgba(255,60,60,.08);border:1px solid rgba(255,60,60,.2);border-radius:10px;font-size:.83rem;color:#ff7070}
+.error.show{display:block;animation:fadeIn .3s}
+
+.results{display:none;margin-top:1.5rem;padding-top:1.5rem;border-top:1px solid var(--border)}
+.results.show{display:block;animation:fadeUp .4s}
+.video-preview{display:flex;gap:1rem;margin-bottom:1.4rem;align-items:flex-start}
+.thumb-wrap{width:110px;height:70px;border-radius:8px;overflow:hidden;flex-shrink:0;border:1px solid var(--border);background:var(--dim);display:flex;align-items:center;justify-content:center;font-size:1.6rem}
+.thumb-wrap img{width:100%;height:100%;object-fit:cover}
+.video-meta h4{font-size:.9rem;font-weight:500;line-height:1.4;margin-bottom:6px}
+.video-meta p{font-size:.75rem;color:var(--muted)}
+.video-stats{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.5rem}
+.stat-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:20px;font-size:.7rem;font-weight:500;background:var(--dim);color:var(--muted);border:1px solid var(--border)}
+
+.formats-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:.7rem;font-weight:500}
+.fmt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:.5rem}
+.fmt-row{display:flex;gap:.4rem;align-items:stretch}
+.fmt-btn{flex:1;padding:.75rem 1rem;border-radius:10px;border:1px solid var(--border);background:#0e0e0f;cursor:pointer;text-align:left;transition:all .2s;font-family:'Instrument Sans',sans-serif;min-width:0}
+.fmt-btn:hover{border-color:var(--green);background:var(--green-dim)}
+.fmt-btn .fl{font-size:.85rem;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fmt-btn .fs{font-size:.7rem;color:var(--muted);margin-top:2px}
+.copy-btn{flex-shrink:0;width:36px;border-radius:10px;border:1px solid var(--border);background:#0e0e0f;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:.85rem;transition:all .2s;color:var(--muted);position:relative}
+.copy-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-dim)}
+.copy-btn.copied{border-color:var(--green);color:var(--green);background:var(--green-dim)}
+.copy-tooltip{position:absolute;bottom:calc(100% + 5px);left:50%;transform:translateX(-50%);background:var(--green);color:#000;font-size:.65rem;font-weight:600;padding:2px 7px;border-radius:5px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .2s}
+.copy-btn.copied .copy-tooltip{opacity:1}
+
+.progress{display:none;margin-top:1.4rem;padding-top:1.4rem;border-top:1px solid var(--border)}
+.progress.show{display:block;animation:fadeIn .3s}
+.prog-info{display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted);margin-bottom:.5rem}
+.prog-bg{height:5px;background:var(--dim);border-radius:10px;overflow:hidden}
+.prog-bar{height:100%;background:var(--green);border-radius:10px;width:0%;transition:width .15s linear}
+
+.success{display:none;margin-top:1.2rem;padding:1rem 1.2rem;background:var(--green-dim);border:1px solid rgba(62,207,142,.2);border-radius:12px;align-items:center;gap:12px}
+.success.show{display:flex;animation:fadeUp .4s}
+.suc-icon{width:34px;height:34px;background:var(--green);border-radius:50%;display:flex;align-items:center;justify-content:center;color:#000;font-weight:700;flex-shrink:0}
+.suc-text h4{font-size:.88rem;font-weight:500;color:var(--green)}
+.suc-text p{font-size:.75rem;color:var(--muted);margin-top:2px}
+.btn-new{margin-left:auto;padding:.45rem .9rem;font-size:.78rem;font-family:'Instrument Sans',sans-serif;background:transparent;border:1px solid var(--border);border-radius:8px;cursor:pointer;color:var(--muted);transition:all .2s}
+.btn-new:hover{border-color:var(--green);color:var(--green)}
+
+.how{width:100%;max-width:640px;margin-top:3rem;animation:fadeUp .8s .2s ease both}
+.how h2{font-family:'Syne',sans-serif;font-size:1.1rem;font-weight:700;margin-bottom:1rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:.8rem}
+@media(max-width:480px){.steps{grid-template-columns:1fr}}
+.step{padding:1.1rem;background:var(--surface);border:1px solid var(--border);border-radius:12px}
+.step-n{font-family:'Syne',sans-serif;font-size:1.8rem;font-weight:800;color:var(--dim);line-height:1;margin-bottom:.4rem}
+.step h4{font-size:.85rem;font-weight:500;margin-bottom:3px}
+.step p{font-size:.75rem;color:var(--muted);line-height:1.5}
+
+footer{position:relative;z-index:1;padding:1.2rem 2rem;border-top:1px solid var(--border);text-align:center;font-size:.75rem;color:var(--muted)}
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Save<span>It</span></div>
+  <div class="header-right">
+    <div class="tagline">No limits · No watermark</div>
+    <div id="proxyBadge">🔒 Secure</div>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <h1>Download any video<br/><span class="accent">instantly.</span></h1>
+    <p>Paste a link from YouTube, TikTok, Instagram or Facebook.</p>
+    <div class="badges">
+      <div class="badge yt"><div class="dot"></div>YouTube</div>
+      <div class="badge tt"><div class="dot"></div>TikTok</div>
+      <div class="badge ig"><div class="dot"></div>Instagram</div>
+      <div class="badge fb"><div class="dot"></div>Facebook</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="input-row">
+      <input type="text" id="urlInput" placeholder="Paste video URL here…" autocomplete="off"/>
+      <button class="btn btn-go" id="fetchBtn" onclick="handleFetch()">Download</button>
+    </div>
+
+    <div class="detected-bar" id="detBar">
+      <div class="det-dot" id="detDot"></div>
+      <span id="detText">Detected</span>
+    </div>
+
+    <div class="status" id="status">
+      <div class="spin"></div>
+      <span id="statusText">Fetching video info…</span>
+    </div>
+
+    <div class="error" id="errorBox"></div>
+
+    <div class="results" id="results">
+      <div class="video-preview">
+        <div class="thumb-wrap" id="thumbWrap">🎬</div>
+        <div class="video-meta">
+          <h4 id="vidTitle">—</h4>
+          <p id="vidMeta">—</p>
+          <div class="video-stats" id="vidStats"></div>
+        </div>
+      </div>
+      <div class="formats-label">Choose format</div>
+      <div class="fmt-grid" id="fmtGrid"></div>
+    </div>
+
+    <div class="progress" id="progressEl">
+      <div class="prog-info"><span id="progLabel">Downloading…</span><span id="progPct">0%</span></div>
+      <div class="prog-bg"><div class="prog-bar" id="progBar"></div></div>
+    </div>
+
+    <div class="success" id="successEl">
+      <div class="suc-icon">✓</div>
+      <div class="suc-text"><h4>Downloaded!</h4><p id="sucDesc">File saved.</p></div>
+      <button class="btn-new" onclick="resetAll()">↺ New</button>
+    </div>
+  </div>
+
+  <div class="how">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step"><div class="step-n">01</div><h4>Paste the link</h4><p>Copy from YouTube, TikTok, Instagram or Facebook.</p></div>
+      <div class="step"><div class="step-n">02</div><h4>Secure fetch</h4><p>Our backend securely retrieves the video links.</p></div>
+      <div class="step"><div class="step-n">03</div><h4>Save it</h4><p>Pick quality — file downloads straight to your device.</p></div>
+    </div>
+  </div>
+</main>
+
+<footer>© 2026 SaveIt · For personal use only</footer>
+
+<script>
+// ── Backend API base URL ───────────────────────────────────────────────────
+// Change this to your deployed backend URL (e.g. https://yourdomain.com)
+const API = 'http://localhost:8000';
+
+const PLATFORM_META = {
+  youtube:   { label:'YouTube',   cls:'c-yt', dot:'#FF0000' },
+  tiktok:    { label:'TikTok',    cls:'c-tt', dot:'#69C9D0' },
+  instagram: { label:'Instagram', cls:'c-ig', dot:'#f77737' },
+  facebook:  { label:'Facebook',  cls:'c-fb', dot:'#1877F2' },
+};
+
+function detect(url) {
+  const u = url.toLowerCase();
+  if (u.includes('youtube.com') || u.includes('youtu.be')) return 'youtube';
+  if (u.includes('tiktok.com')  || u.includes('vm.tiktok')) return 'tiktok';
+  if (u.includes('instagram.com')) return 'instagram';
+  if (u.includes('facebook.com') || u.includes('fb.watch')) return 'facebook';
+  return null;
+}
+
+const $ = id => document.getElementById(id);
+let currentUrl = '';
+
+$('urlInput').addEventListener('input', () => {
+  const p = detect($('urlInput').value.trim());
+  if (!p) { $('detBar').classList.remove('show'); return; }
+  const m = PLATFORM_META[p];
+  $('detDot').style.background = m.dot;
+  $('detText').textContent = 'Detected: ' + m.label;
+  $('detBar').className = 'detected-bar show ' + m.cls;
+});
+
+$('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') handleFetch(); });
+
+// ── Main handler — calls backend /api/info ─────────────────────────────────
+async function handleFetch() {
+  const url = $('urlInput').value.trim();
+  if (!url) { $('urlInput').focus(); return; }
+  if (!detect(url)) {
+    showError('YouTube, TikTok, Instagram හෝ Facebook link එකක් paste කරන්න.');
+    return;
+  }
+
+  currentUrl = url;
+  resetResults();
+  setLoading(true, 'Fetching video info…');
+
+  try {
+    const res  = await fetch(`${API}/api/info`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ url }),
+    });
+
+    if (res.status === 429) throw new Error('🔴 Too many requests — wait a moment');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || '🔴 Server busy — try again later');
+    }
+
+    const data = await res.json();
+    setLoading(false);
+    renderResults(data);
+
+  } catch(e) {
+    setLoading(false);
+    if (e.name === 'TypeError') {
+      showError('🔴 Cannot reach server — is the backend running?');
+    } else {
+      showError(e.message);
+    }
+  }
+}
+
+// ── Render results ─────────────────────────────────────────────────────────
+function renderResults(data) {
+  if (data.thumb) {
+    const img = document.createElement('img');
+    img.src = data.thumb;
+    img.onload = () => { $('thumbWrap').innerHTML = ''; $('thumbWrap').appendChild(img); };
+  }
+  $('vidTitle').textContent = data.title || '—';
+  $('vidMeta').textContent  = PLATFORM_META[data.platform]?.label || data.platform;
+
+  const statsEl = $('vidStats');
+  statsEl.innerHTML = '';
+  const chip = (icon, txt) => {
+    if (!txt) return;
+    const c = document.createElement('div');
+    c.className = 'stat-chip';
+    c.innerHTML = `<span>${icon}</span>${txt}`;
+    statsEl.appendChild(c);
+  };
+  chip('⏱', data.duration);
+  chip('👤', data.author);
+
+  const grid = $('fmtGrid');
+  grid.innerHTML = '';
+  (data.formats || []).forEach(f => {
+    const row = document.createElement('div');
+    row.className = 'fmt-row';
+
+    const btn = document.createElement('button');
+    btn.className = 'fmt-btn';
+    btn.innerHTML = `<div class="fl">${f.label}</div><div class="fs">${f.ext?.toUpperCase() || ''}${f.external ? ' ↗' : ''}</div>`;
+    btn.onclick = () => f.external
+      ? window.open(f.url, '_blank')
+      : startDownload(f, data.title);
+    row.appendChild(btn);
+
+    if (f.url && !f.external) {
+      const cp = document.createElement('button');
+      cp.className = 'copy-btn';
+      cp.title = 'Copy download link';
+      cp.innerHTML = `<span>📋</span><span class="copy-tooltip">Copied!</span>`;
+      cp.onclick = e => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(f.url).catch(() => {});
+        cp.classList.add('copied');
+        setTimeout(() => cp.classList.remove('copied'), 1800);
+      };
+      row.appendChild(cp);
+    }
+
+    grid.appendChild(row);
+  });
+
+  $('results').classList.add('show');
+}
+
+// ── Download — backend handles convert, frontend just streams ──────────────
+async function startDownload(fmt, title) {
+  $('results').classList.remove('show');
+  $('progressEl').classList.add('show');
+  $('progBar').style.width = '0%';
+  $('progPct').textContent = '0%';
+  $('progLabel').textContent = `Preparing ${fmt.label}…`;
+
+  let pct = 0;
+  const ticker = setInterval(() => {
+    if (pct < 85) pct += Math.random() * 5 + 2;
+    $('progBar').style.width = pct + '%';
+    $('progPct').textContent = Math.round(pct) + '%';
+  }, 200);
+
+  try {
+    let downloadUrl = fmt.url;
+
+    // YouTube — ask backend to do y2mate convert (hidden from browser)
+    if (!downloadUrl && fmt.k && fmt.vid) {
+      const r = await fetch(`${API}/api/yt-convert`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ vid: fmt.vid, k: fmt.k }),
+      });
+      if (!r.ok) throw new Error('🔴 Convert failed — try again');
+      const d = await r.json();
+      downloadUrl = d.url;
+    }
+
+    clearInterval(ticker);
+    if (!downloadUrl) throw new Error('Download URL not found');
+
+    $('progBar').style.width = '100%';
+    $('progPct').textContent = '100%';
+
+    const a = document.createElement('a');
+    a.href     = downloadUrl;
+    a.download = `${(title||'video').substring(0,50)}.${fmt.ext}`;
+    a.target   = '_blank';
+    a.rel      = 'noopener';
+    a.click();
+
+    setTimeout(() => {
+      $('progressEl').classList.remove('show');
+      $('sucDesc').textContent = `${fmt.label} ready!`;
+      $('successEl').classList.add('show');
+    }, 600);
+
+  } catch(e) {
+    clearInterval(ticker);
+    $('progressEl').classList.remove('show');
+    showError(e.message);
+  }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function setLoading(on, msg = '') {
+  $('status').classList.toggle('show', on);
+  $('statusText').textContent = msg;
+  $('fetchBtn').disabled = on;
+}
+function showError(msg) { $('errorBox').textContent = msg; $('errorBox').classList.add('show'); }
+function resetResults() {
+  ['results','progressEl','successEl','errorBox'].forEach(id => $(id).classList.remove('show'));
+  $('thumbWrap').innerHTML = '🎬';
+  $('fmtGrid').innerHTML = '';
+  $('vidStats').innerHTML = '';
+  $('progBar').style.width = '0%';
+}
+function resetAll() {
+  $('urlInput').value = '';
+  $('detBar').classList.remove('show');
+  currentUrl = '';
+  resetResults();
+}
+</script>
+</body>
+</html>
