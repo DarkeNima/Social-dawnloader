@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import yt_dlp, os, re, tempfile, requests, asyncio
+import yt_dlp, os, re, tempfile, requests
 
 app = FastAPI(docs_url=None, redoc_url=None)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -41,109 +41,16 @@ def fmt_size(b):
     if b >= 1_000: return f"~{b/1_000:.0f}KB"
     return ""
 
+def expand_url(url: str) -> str:
+    """Expand short URLs like vt.tiktok.com"""
+    try:
+        r = requests.head(url, allow_redirects=True, timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"})
+        return r.url
+    except:
+        return url
 
-# ── YouTube info — try multiple clients ───────────────────────────────────
-def scrape_youtube(url):
-    clients = ["ios", "mweb", "android", "tv_embedded"]
-    last_err = ""
-    for client in clients:
-        try:
-            opts = {
-                "quiet": True, "no_warnings": True, "skip_download": True,
-                "extractor_args": {"youtube": {"player_client": [client]}},
-            }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-            return build_result(info, "youtube")
-        except Exception as e:
-            last_err = str(e)
-            continue
-    raise Exception(last_err)
-
-
-# ── TikTok info ────────────────────────────────────────────────────────────
-def scrape_tiktok(url):
-    opts = {
-        "quiet": True, "no_warnings": True, "skip_download": True,
-        "extractor_args": {
-            "tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"},
-        },
-        "http_headers": {
-            "User-Agent": "TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet",
-        }
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-    return build_result(info, "tiktok")
-
-
-# ── Facebook / Instagram — download+merge then stream ─────────────────────
-def scrape_fb_ig(url, platform):
-    """
-    For FB/IG: yt-dlp download best quality (merges audio+video)
-    Returns a special 'download' type format pointing to /api/download
-    """
-    opts = {
-        "quiet": True, "no_warnings": True, "skip_download": True,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-        }
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-
-    if info.get("entries"):
-        info = list(info["entries"])[0]
-
-    # Build formats — prefer combined audio+video
-    formats, seen = [], set()
-    for f in info.get("formats", []):
-        vcodec = f.get("vcodec", "none")
-        acodec = f.get("acodec", "none")
-        res    = f.get("height")
-        furl   = f.get("url", "")
-        fsize  = f.get("filesize") or f.get("filesize_approx")
-        if not furl: continue
-
-        # Combined stream (has both video + audio) — best for direct download
-        if vcodec != "none" and acodec != "none" and res:
-            label = f"MP4 {res}p"
-            if label not in seen:
-                seen.add(label)
-                formats.append({
-                    "label": label, "ext": "mp4",
-                    "url": furl, "filesize": fsize,
-                    "sub": fmt_size(fsize),
-                })
-
-    # If no combined streams found, use /api/download to merge server-side
-    if not formats:
-        formats = [
-            {"label": "MP4 Best Quality", "ext": "mp4",
-             "url": None, "download_url": url, "merge": True,
-             "sub": "server-side merge"},
-            {"label": "MP4 SD", "ext": "mp4",
-             "url": None, "download_url": url + "::sd", "merge": True,
-             "sub": "smaller file"},
-        ]
-
-    return {
-        "title":    info.get("title", "Video"),
-        "thumb":    info.get("thumbnail"),
-        "author":   info.get("uploader") or info.get("channel"),
-        "duration": fmt_duration(info.get("duration")),
-        "views":    fmt_views(info.get("view_count")),
-        "platform": platform,
-        "formats":  formats[:6],
-    }
-
-
-# ── Generic format builder ─────────────────────────────────────────────────
-def build_result(info, platform):
-    if info.get("entries"):
-        info = list(info["entries"])[0]
-
+def build_formats(info):
     formats, seen = [], set()
     for f in info.get("formats", []):
         vcodec = f.get("vcodec", "none")
@@ -157,18 +64,120 @@ def build_result(info, platform):
             label = f"MP4 {res}p"
             if label not in seen:
                 seen.add(label)
-                formats.append({"label": label, "ext": "mp4", "url": furl,
-                                 "filesize": fsize, "sub": fmt_size(fsize)})
+                formats.append({"label": label, "ext": "mp4",
+                                 "url": furl, "sub": fmt_size(fsize),
+                                 "has_audio": acodec != "none"})
         elif vcodec == "none" and acodec != "none":
             if "MP3 Audio" not in seen:
                 seen.add("MP3 Audio")
-                formats.append({"label": "MP3 Audio", "ext": "mp3", "url": furl,
-                                 "filesize": fsize, "sub": fmt_size(fsize)})
+                formats.append({"label": "MP3 Audio", "ext": "mp3",
+                                 "url": furl, "sub": fmt_size(fsize)})
 
     def sort_key(f):
         nums = re.findall(r'\d+', f["label"])
-        return (f["label"] == "MP3 Audio", -(int(nums[0]) if nums else 0))
+        return (f["label"] == "MP3 Audio",
+                not f.get("has_audio", True),
+                -(int(nums[0]) if nums else 0))
     formats.sort(key=sort_key)
+    return formats[:8]
+
+def make_result(info, platform):
+    if info.get("entries"):
+        info = list(info["entries"])[0]
+    return {
+        "title":    info.get("title", "Video"),
+        "thumb":    info.get("thumbnail"),
+        "author":   info.get("uploader") or info.get("channel"),
+        "duration": fmt_duration(info.get("duration")),
+        "views":    fmt_views(info.get("view_count")),
+        "platform": platform,
+        "formats":  build_formats(info),
+    }
+
+# ── Scrapers ───────────────────────────────────────────────────────────────
+
+def scrape_youtube(url):
+    for client in ["ios", "mweb", "android", "tv_embedded"]:
+        try:
+            opts = {"quiet": True, "no_warnings": True, "skip_download": True,
+                    "extractor_args": {"youtube": {"player_client": [client]}}}
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return make_result(ydl.extract_info(url, download=False), "youtube")
+        except Exception as e:
+            last = str(e)
+    raise Exception(last)
+
+def scrape_tiktok(url):
+    # Expand short URL first
+    expanded = expand_url(url)
+    opts = {
+        "quiet": True, "no_warnings": True, "skip_download": True,
+        "extractor_args": {
+            "tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"},
+        },
+        "http_headers": {
+            "User-Agent": "TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet",
+        }
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        return make_result(ydl.extract_info(expanded, download=False), "tiktok")
+
+def scrape_fb_ig(url, platform):
+    opts = {
+        "quiet": True, "no_warnings": True, "skip_download": True,
+        # Prefer single-file format (has audio already, no ffmpeg needed)
+        "format": "best[ext=mp4]/best/bestvideo+bestaudio",
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+        }
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    if info.get("entries"):
+        info = list(info["entries"])[0]
+
+    # Get selected format URL
+    requested = info.get("requested_formats") or []
+    direct_url = info.get("url")
+
+    formats = []
+
+    # If single combined format — direct download
+    if direct_url and not requested:
+        res = info.get("height", "")
+        fsize = info.get("filesize") or info.get("filesize_approx")
+        formats.append({
+            "label": f"MP4 {res}p" if res else "MP4 Best",
+            "ext": "mp4", "url": direct_url,
+            "sub": fmt_size(fsize),
+        })
+    else:
+        # Multiple formats need merging — use /api/download
+        formats.append({
+            "label": "MP4 Best Quality", "ext": "mp4",
+            "url": None, "download_url": url, "merge": True,
+            "sub": "audio+video merge",
+        })
+        formats.append({
+            "label": "MP4 SD", "ext": "mp4",
+            "url": None, "download_url": url + "::sd", "merge": True,
+            "sub": "smaller file",
+        })
+
+    # Also add any other direct formats from info
+    for f in info.get("formats", [])[-5:]:
+        vcodec = f.get("vcodec","none")
+        acodec = f.get("acodec","none")
+        res = f.get("height")
+        furl = f.get("url","")
+        if vcodec != "none" and acodec != "none" and res and furl:
+            label = f"MP4 {res}p"
+            if not any(x["label"] == label for x in formats):
+                fsize = f.get("filesize") or f.get("filesize_approx")
+                formats.append({"label": label, "ext": "mp4",
+                                 "url": furl, "sub": fmt_size(fsize)})
 
     return {
         "title":    info.get("title", "Video"),
@@ -177,7 +186,7 @@ def build_result(info, platform):
         "duration": fmt_duration(info.get("duration")),
         "views":    fmt_views(info.get("view_count")),
         "platform": platform,
-        "formats":  formats[:8],
+        "formats":  formats[:6],
     }
 
 
@@ -192,34 +201,29 @@ async def get_info(req: InfoRequest):
     if platform == "unknown":
         raise HTTPException(422, "YouTube, TikTok, Instagram හෝ Facebook link paste කරන්න")
     try:
-        if platform == "youtube":
-            return scrape_youtube(url)
-        elif platform == "tiktok":
-            return scrape_tiktok(url)
-        else:
-            return scrape_fb_ig(url, platform)
+        if platform == "youtube":   return scrape_youtube(url)
+        elif platform == "tiktok":  return scrape_tiktok(url)
+        else:                       return scrape_fb_ig(url, platform)
     except yt_dlp.utils.DownloadError as e:
         err = str(e)
-        if "Sign in" in err or "bot" in err: raise HTTPException(422, "YouTube bot check — ටිකක් delay කරලා try කරන්න")
-        if "private" in err.lower(): raise HTTPException(422, "Private video")
-        if "status code 0" in err or "available" in err.lower(): raise HTTPException(422, "Video available නෑ — full TikTok link paste කරන්න")
-        raise HTTPException(422, err[:250])
+        if "Sign in" in err or "bot" in err: raise HTTPException(422, "YouTube bot check — ටිකක් later try කරන්න")
+        if "private" in err.lower():         raise HTTPException(422, "Private video")
+        if "status code 0" in err:           raise HTTPException(422, "Video available නෑ")
+        raise HTTPException(422, err[:200])
     except Exception as e:
-        raise HTTPException(500, str(e)[:250])
+        raise HTTPException(500, str(e)[:200])
 
 
-# ── Server-side download+merge for FB/IG ──────────────────────────────────
 class DownloadRequest(BaseModel):
     url: str
-    quality: str = "best"
 
 @app.post("/api/download")
 async def download_merge(req: DownloadRequest):
-    """Download + merge audio+video server-side, stream back."""
+    """Download + ffmpeg merge server-side, stream back."""
     url = req.url.replace("::sd", "")
-    quality = "worstvideo+worstaudio/worst" if "::sd" in req.url else "bestvideo+bestaudio/best"
+    quality = "worstvideo+worstaudio/worst" if req.url.endswith("::sd") else "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
 
-    out_tmpl = os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s")
+    out_tmpl = os.path.join(DOWNLOAD_DIR, "%(id)s_%(epoch)s.%(ext)s")
     opts = {
         "quiet": True, "no_warnings": True,
         "format": quality,
@@ -233,33 +237,36 @@ async def download_merge(req: DownloadRequest):
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            if not filename.endswith(".mp4"):
-                filename = os.path.splitext(filename)[0] + ".mp4"
+            fname = ydl.prepare_filename(info)
+            if not fname.endswith(".mp4"):
+                fname = os.path.splitext(fname)[0] + ".mp4"
 
-        if not os.path.exists(filename):
+        if not os.path.exists(fname):
             raise HTTPException(500, "File not created")
 
+        size = os.path.getsize(fname)
+        title = re.sub(r'[^\w\s-]', '', info.get("title","video")[:40]).strip()
+
         def gen():
-            with open(filename, "rb") as f:
+            with open(fname, "rb") as f:
                 while chunk := f.read(65536):
                     yield chunk
-            os.unlink(filename)  # cleanup
-
-        title = info.get("title", "video")[:40]
-        safe_title = re.sub(r'[^\w\s-]', '', title).strip()
+            try: os.unlink(fname)
+            except: pass
 
         return StreamingResponse(gen(), media_type="video/mp4", headers={
-            "Content-Disposition": f'attachment; filename="{safe_title}.mp4"',
-            "Content-Length": str(os.path.getsize(filename)),
+            "Content-Disposition": f'attachment; filename="{title}.mp4"',
+            "Content-Length": str(size),
         })
+    except HTTPException: raise
     except Exception as e:
         raise HTTPException(500, str(e)[:200])
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "engine": "yt-dlp v5"}
+    import shutil
+    return {"status": "ok", "ffmpeg": bool(shutil.which("ffmpeg"))}
 
 @app.get("/")
 async def root():
