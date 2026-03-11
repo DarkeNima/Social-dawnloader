@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import yt_dlp, os, re, tempfile, requests
+import requests, os, re, tempfile, random
 
 app = FastAPI(docs_url=None, redoc_url=None)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -15,178 +15,165 @@ if os.path.exists(static_dir):
 
 DOWNLOAD_DIR = tempfile.mkdtemp()
 
+# ── Cobalt public instances (no auth, no key needed) ──────────────────────
+# These are public community instances from instances.cobalt.best
+COBALT_INSTANCES = [
+    "https://cobalt.synzr.space",
+    "https://cobalt.privacyredirect.com",
+    "https://cobalt.zt-tech.eu",
+    "https://co.wuk.sh",
+    "https://cobalt.vuiis.eu",
+    "https://dl.lao.sb",
+]
+
+HEADERS = {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "User-Agent": "SaveIt/1.0 (+https://github.com/saveit)",
+}
+
 def detect_platform(url: str) -> str:
     u = url.lower()
     if "youtube.com" in u or "youtu.be" in u: return "youtube"
     if "tiktok.com" in u or "vm.tiktok" in u or "vt.tiktok" in u: return "tiktok"
     if "instagram.com" in u: return "instagram"
     if "facebook.com" in u or "fb.watch" in u: return "facebook"
-    return "unknown"
-
-def fmt_duration(secs):
-    if not secs: return None
-    m, s = divmod(int(secs), 60)
-    h, m = divmod(m, 60)
-    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
-
-def fmt_views(v):
-    if not v: return None
-    if v >= 1_000_000: return f"{v/1_000_000:.1f}M views"
-    if v >= 1_000: return f"{v/1_000:.1f}K views"
-    return f"{v} views"
-
-def fmt_size(b):
-    if not b: return ""
-    if b >= 1_000_000: return f"~{b/1_000_000:.0f}MB"
-    if b >= 1_000: return f"~{b/1_000:.0f}KB"
-    return ""
+    if "twitter.com" in u or "x.com" in u: return "twitter"
+    if "reddit.com" in u: return "reddit"
+    return "other"
 
 def expand_url(url: str) -> str:
-    """Expand short URLs like vt.tiktok.com"""
     try:
-        r = requests.head(url, allow_redirects=True, timeout=10,
+        r = requests.head(url, allow_redirects=True, timeout=8,
             headers={"User-Agent": "Mozilla/5.0"})
         return r.url
     except:
         return url
 
-def build_formats(info):
-    formats, seen = [], set()
-    for f in info.get("formats", []):
-        vcodec = f.get("vcodec", "none")
-        acodec = f.get("acodec", "none")
-        res    = f.get("height")
-        furl   = f.get("url", "")
-        fsize  = f.get("filesize") or f.get("filesize_approx")
-        if not furl: continue
+def cobalt_request(url: str, quality: str = "1080", audio_only: bool = False) -> dict:
+    """Try each cobalt instance until one works."""
+    instances = COBALT_INSTANCES.copy()
+    random.shuffle(instances)  # load balance
 
-        if vcodec != "none" and res:
-            label = f"MP4 {res}p"
-            if label not in seen:
-                seen.add(label)
-                formats.append({"label": label, "ext": "mp4",
-                                 "url": furl, "sub": fmt_size(fsize),
-                                 "has_audio": acodec != "none"})
-        elif vcodec == "none" and acodec != "none":
-            if "MP3 Audio" not in seen:
-                seen.add("MP3 Audio")
-                formats.append({"label": "MP3 Audio", "ext": "mp3",
-                                 "url": furl, "sub": fmt_size(fsize)})
-
-    def sort_key(f):
-        nums = re.findall(r'\d+', f["label"])
-        return (f["label"] == "MP3 Audio",
-                not f.get("has_audio", True),
-                -(int(nums[0]) if nums else 0))
-    formats.sort(key=sort_key)
-    return formats[:8]
-
-def make_result(info, platform):
-    if info.get("entries"):
-        info = list(info["entries"])[0]
-    return {
-        "title":    info.get("title", "Video"),
-        "thumb":    info.get("thumbnail"),
-        "author":   info.get("uploader") or info.get("channel"),
-        "duration": fmt_duration(info.get("duration")),
-        "views":    fmt_views(info.get("view_count")),
-        "platform": platform,
-        "formats":  build_formats(info),
+    payload = {
+        "url": url,
+        "videoQuality": quality,
+        "audioFormat": "mp3",
+        "filenameStyle": "pretty",
+        "downloadMode": "audio" if audio_only else "auto",
     }
 
-# ── Scrapers ───────────────────────────────────────────────────────────────
-
-def scrape_youtube(url):
-    for client in ["ios", "mweb", "android", "tv_embedded"]:
+    last_error = "All instances failed"
+    for instance in instances:
         try:
-            opts = {"quiet": True, "no_warnings": True, "skip_download": True,
-                    "extractor_args": {"youtube": {"player_client": [client]}}}
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                return make_result(ydl.extract_info(url, download=False), "youtube")
+            r = requests.post(
+                f"{instance}/",
+                json=payload,
+                headers=HEADERS,
+                timeout=15,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                status = data.get("status", "")
+                if status in ("stream", "redirect", "tunnel"):
+                    return {"ok": True, "url": data.get("url"), "instance": instance, "status": status}
+                elif status == "picker":
+                    # Multiple items (e.g. Instagram carousel)
+                    items = data.get("picker", [])
+                    urls = [{"url": i.get("url"), "type": i.get("type","video")} for i in items if i.get("url")]
+                    if urls:
+                        return {"ok": True, "picker": urls, "instance": instance}
+                elif status == "error":
+                    last_error = data.get("error", {}).get("code", "unknown error")
+                    continue
+            else:
+                last_error = f"HTTP {r.status_code}"
+        except requests.exceptions.Timeout:
+            last_error = "timeout"
         except Exception as e:
-            last = str(e)
-    raise Exception(last)
+            last_error = str(e)[:100]
+    
+    return {"ok": False, "error": last_error}
 
-def scrape_tiktok(url):
-    # Expand short URL first
-    expanded = expand_url(url)
-    opts = {
-        "quiet": True, "no_warnings": True, "skip_download": True,
-        "extractor_args": {
-            "tiktok": {"api_hostname": "api22-normal-c-useast2a.tiktokv.com"},
-        },
-        "http_headers": {
-            "User-Agent": "TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet",
-        }
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        return make_result(ydl.extract_info(expanded, download=False), "tiktok")
 
-def scrape_fb_ig(url, platform):
-    opts = {
-        "quiet": True, "no_warnings": True, "skip_download": True,
-        # Prefer single-file format (has audio already, no ffmpeg needed)
-        "format": "best[ext=mp4]/best/bestvideo+bestaudio",
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-        }
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-
-    if info.get("entries"):
-        info = list(info["entries"])[0]
-
-    # Get selected format URL
-    requested = info.get("requested_formats") or []
-    direct_url = info.get("url")
+def scrape_info(url: str, platform: str) -> dict:
+    """Get video info + all quality options."""
+    # Expand short URLs
+    if any(x in url for x in ["vt.tiktok", "vm.tiktok", "fb.watch"]):
+        url = expand_url(url)
 
     formats = []
+    title = "Video"
+    thumb = None
 
-    # If single combined format — direct download
-    if direct_url and not requested:
-        res = info.get("height", "")
-        fsize = info.get("filesize") or info.get("filesize_approx")
+    # Try multiple qualities
+    qualities = ["1080", "720", "480", "360"]
+    first_result = None
+
+    for quality in qualities:
+        result = cobalt_request(url, quality=quality)
+        if result["ok"]:
+            if first_result is None:
+                first_result = result
+
+            if result.get("picker"):
+                # Carousel / multiple items
+                for i, item in enumerate(result["picker"][:4]):
+                    ext = "mp3" if item["type"] == "audio" else "mp4"
+                    formats.append({
+                        "label": f"Item {i+1} {ext.upper()}",
+                        "ext": ext,
+                        "url": item["url"],
+                        "sub": "",
+                    })
+                break
+            else:
+                furl = result.get("url")
+                if furl:
+                    label = f"MP4 {quality}p"
+                    if not any(f["label"] == label for f in formats):
+                        formats.append({
+                            "label": label,
+                            "ext": "mp4",
+                            "url": furl,
+                            "sub": quality + "p",
+                        })
+
+    # Add audio option
+    audio_result = cobalt_request(url, audio_only=True)
+    if audio_result["ok"] and audio_result.get("url"):
         formats.append({
-            "label": f"MP4 {res}p" if res else "MP4 Best",
-            "ext": "mp4", "url": direct_url,
-            "sub": fmt_size(fsize),
-        })
-    else:
-        # Multiple formats need merging — use /api/download
-        formats.append({
-            "label": "MP4 Best Quality", "ext": "mp4",
-            "url": None, "download_url": url, "merge": True,
-            "sub": "audio+video merge",
-        })
-        formats.append({
-            "label": "MP4 SD", "ext": "mp4",
-            "url": None, "download_url": url + "::sd", "merge": True,
-            "sub": "smaller file",
+            "label": "MP3 Audio",
+            "ext": "mp3",
+            "url": audio_result["url"],
+            "sub": "audio only",
         })
 
-    # Also add any other direct formats from info
-    for f in info.get("formats", [])[-5:]:
-        vcodec = f.get("vcodec","none")
-        acodec = f.get("acodec","none")
-        res = f.get("height")
-        furl = f.get("url","")
-        if vcodec != "none" and acodec != "none" and res and furl:
-            label = f"MP4 {res}p"
-            if not any(x["label"] == label for x in formats):
-                fsize = f.get("filesize") or f.get("filesize_approx")
-                formats.append({"label": label, "ext": "mp4",
-                                 "url": furl, "sub": fmt_size(fsize)})
+    if not formats:
+        error = first_result.get("error", "Could not fetch video") if first_result else "All instances unavailable"
+        raise ValueError(error)
+
+    # Try get thumbnail from YouTube oEmbed
+    if platform == "youtube":
+        try:
+            oe = requests.get(
+                f"https://www.youtube.com/oembed?url={requests.utils.quote(url)}&format=json",
+                timeout=5
+            )
+            if oe.ok:
+                info = oe.json()
+                title = info.get("title", title)
+                thumb = info.get("thumbnail_url")
+        except: pass
 
     return {
-        "title":    info.get("title", "Video"),
-        "thumb":    info.get("thumbnail"),
-        "author":   info.get("uploader") or info.get("channel"),
-        "duration": fmt_duration(info.get("duration")),
-        "views":    fmt_views(info.get("view_count")),
+        "title": title,
+        "thumb": thumb,
+        "author": None,
+        "duration": None,
+        "views": None,
         "platform": platform,
-        "formats":  formats[:6],
+        "formats": formats[:6],
     }
 
 
@@ -197,76 +184,49 @@ class InfoRequest(BaseModel):
 @app.post("/api/info")
 async def get_info(req: InfoRequest):
     url = req.url.strip()
+    if not url:
+        raise HTTPException(400, "URL නෑ")
     platform = detect_platform(url)
-    if platform == "unknown":
-        raise HTTPException(422, "YouTube, TikTok, Instagram හෝ Facebook link paste කරන්න")
     try:
-        if platform == "youtube":   return scrape_youtube(url)
-        elif platform == "tiktok":  return scrape_tiktok(url)
-        else:                       return scrape_fb_ig(url, platform)
-    except yt_dlp.utils.DownloadError as e:
-        err = str(e)
-        if "Sign in" in err or "bot" in err: raise HTTPException(422, "YouTube bot check — ටිකක් later try කරන්න")
-        if "private" in err.lower():         raise HTTPException(422, "Private video")
-        if "status code 0" in err:           raise HTTPException(422, "Video available නෑ")
-        raise HTTPException(422, err[:200])
+        return scrape_info(url, platform)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
     except Exception as e:
         raise HTTPException(500, str(e)[:200])
 
 
-class DownloadRequest(BaseModel):
+class StreamRequest(BaseModel):
     url: str
+    ext: str = "mp4"
+    filename: str = "saveit_video"
 
-@app.post("/api/download")
-async def download_merge(req: DownloadRequest):
-    """Download + ffmpeg merge server-side, stream back."""
-    url = req.url.replace("::sd", "")
-    quality = "worstvideo+worstaudio/worst" if req.url.endswith("::sd") else "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
-
-    out_tmpl = os.path.join(DOWNLOAD_DIR, "%(id)s_%(epoch)s.%(ext)s")
-    opts = {
-        "quiet": True, "no_warnings": True,
-        "format": quality,
-        "outtmpl": out_tmpl,
-        "merge_output_format": "mp4",
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-        }
-    }
+@app.post("/api/stream")
+async def stream_file(req: StreamRequest):
+    """Proxy stream to browser."""
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            fname = ydl.prepare_filename(info)
-            if not fname.endswith(".mp4"):
-                fname = os.path.splitext(fname)[0] + ".mp4"
-
-        if not os.path.exists(fname):
-            raise HTTPException(500, "File not created")
-
-        size = os.path.getsize(fname)
-        title = re.sub(r'[^\w\s-]', '', info.get("title","video")[:40]).strip()
+        s = requests.Session()
+        s.headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        r = s.get(req.url, stream=True, timeout=60)
+        r.raise_for_status()
+        ct = r.headers.get("Content-Type", f"video/{req.ext}")
+        size = r.headers.get("Content-Length")
 
         def gen():
-            with open(fname, "rb") as f:
-                while chunk := f.read(65536):
-                    yield chunk
-            try: os.unlink(fname)
-            except: pass
+            for chunk in r.iter_content(65536):
+                yield chunk
 
-        return StreamingResponse(gen(), media_type="video/mp4", headers={
-            "Content-Disposition": f'attachment; filename="{title}.mp4"',
-            "Content-Length": str(size),
-        })
-    except HTTPException: raise
+        headers = {"Content-Disposition": f'attachment; filename="{req.filename}.{req.ext}"'}
+        if size:
+            headers["Content-Length"] = size
+
+        return StreamingResponse(gen(), media_type=ct, headers=headers)
     except Exception as e:
         raise HTTPException(500, str(e)[:200])
 
 
 @app.get("/api/health")
 async def health():
-    import shutil
-    return {"status": "ok", "ffmpeg": bool(shutil.which("ffmpeg"))}
+    return {"status": "ok", "engine": "cobalt", "instances": len(COBALT_INSTANCES)}
 
 @app.get("/")
 async def root():
